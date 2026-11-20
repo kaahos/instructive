@@ -1,33 +1,41 @@
 package instructive.agent;
 
+import instructive.parse.Disassembler;
+import instructive.parse.Instruction;
+import instructive.parse.aarch64.Aarch64Disassembler;
 import java.io.PrintStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 /**
- * Prints an {@link InstructionProfile} as a table of its sampled instructions:
+ * Prints an {@link InstructionProfile} as a table of its instructions and samples:
  *
  * <pre>
  * Example.loop(J)J
  *   tier 4 (C2), compile id 355, 632 bytes at 0x0000000137ad5540, 176 samples
  *
- *   pc                  bytes          count       %
- *   0x0000000137ad5610  e0 03 0e 2a        5    2.84%
+ *   pc                  bytes        instruction                count       %
+ *   0x0000000137ad5610  ee 03 0b 2a  mov w14, w11                   5    2.84%
+ *   0x0000000137ad56e4  6d 00 00 54  b.le 0x137ad5610 &lt;+0xd0&gt;      17    9.66%
  *   ...
  * </pre>
  *
- * <p>One row per program counter with samples, in address order: the PC (the method's
- * address plus the count's offset), the instruction bytes at the PC, the samples there,
- * and their share of the method's {@link InstructionProfile#total() total}. PCs past the
- * method's instructions, in its stubs, are marked {@code (stub)}. The bytes come from
- * {@link InstructionProfile#machineCode()}; if the method is no longer loaded they are
- * shown as {@code ?}.
+ * <p>Each row is the PC (the method's address plus the count's offset), the
+ * instruction's bytes, the instruction disassembled, the samples there and their share
+ * of the method's {@link InstructionProfile#total() total}. A direct branch within the
+ * method is annotated with its target's offset. PCs past the method's instructions, in
+ * its stubs, are marked {@code (stub)}. By default only sampled instructions are
+ * shown; {@link #allInstructions()} lists the whole method. The code comes from
+ * {@link InstructionProfile#machineCode()}; if the method is no longer loaded the bytes
+ * and instructions are shown as {@code ?}.
  *
- * <p>Sampled PCs are always instruction starts, but how many bytes the instruction has
- * depends on the architecture, which an {@link InstructionLength} decides. On aarch64
- * every instruction is 4 bytes. Without a decoder for variable-length instructions, as
- * on x86-64, the default shows the bytes up to the next sampled PC, at most 15 (the
- * x86 maximum), so the column starts with the sampled instruction but may run on into
- * the ones after it.
+ * <p>Instructions are decoded with a {@link Disassembler}, by default the one for this
+ * JVM's architecture. Without one (there is none for x86-64 yet) the instruction column
+ * is left out and the bytes column shows the bytes up to the next sampled PC, at most
+ * 15 (the longest x86 instruction): it starts with the sampled instruction but may run
+ * on into the ones after it.
  *
  * <p>Formatting a live flyweight from a consumer is allowed while the consumer runs,
  * but counts can change mid-table; format a {@link InstructionProfile#snapshot()} for a
@@ -35,78 +43,135 @@ import java.util.Locale;
  */
 public final class InstructionProfileFormatter {
 
-    /** Decides how many bytes of an instruction to show. */
-    @FunctionalInterface
-    public interface InstructionLength {
-        /**
-         * The length of the instruction at {@code offset} in {@code code}, given that
-         * {@code nextSampled} is the next offset with samples (or {@code code.length}).
-         * The result is clamped to the code that remains.
-         */
-        int at(byte[] code, int offset, int nextSampled);
-    }
+    private static final int MAX_UNDECODED_BYTES = 15;
 
-    /** Fixed 4-byte instructions, as on aarch64. */
-    public static final InstructionLength FIXED_4 = (code, offset, nextSampled) -> 4;
+    private final Disassembler disassembler;
+    private final boolean allInstructions;
 
-    /** Up to the next sampled PC, at most 15 bytes: for x86 when no decoder is available. */
-    public static final InstructionLength UP_TO_NEXT_SAMPLE = (code, offset, nextSampled) ->
-            Math.min(15, nextSampled - offset);
-
-    private final InstructionLength lengths;
-
-    /** A formatter for the architecture of this JVM. */
+    /** A formatter that disassembles with the decoder for this JVM's architecture, if there is one. */
     public InstructionProfileFormatter() {
-        this(forArchitecture(System.getProperty("os.arch")));
+        this(forArchitecture(System.getProperty("os.arch")).orElse(null));
     }
 
-    public InstructionProfileFormatter(InstructionLength lengths) {
-        this.lengths = lengths;
+    /** A formatter that disassembles with {@code disassembler}, or shows only bytes if it is null. */
+    public InstructionProfileFormatter(Disassembler disassembler) {
+        this(disassembler, false);
     }
 
-    /** The default {@link InstructionLength} for an {@code os.arch} value. */
-    public static InstructionLength forArchitecture(String arch) {
+    private InstructionProfileFormatter(Disassembler disassembler, boolean allInstructions) {
+        this.disassembler = disassembler;
+        this.allInstructions = allInstructions;
+    }
+
+    /** The disassembler for an {@code os.arch} value, if there is one. */
+    public static Optional<Disassembler> forArchitecture(String arch) {
         return switch (arch.toLowerCase(Locale.ROOT)) {
-            case "aarch64", "arm64" -> FIXED_4;
-            default -> UP_TO_NEXT_SAMPLE;
+            case "aarch64", "arm64" -> Optional.of(new Aarch64Disassembler());
+            default -> Optional.empty();
         };
+    }
+
+    /**
+     * A formatter like this one that lists every instruction in the method, not only the
+     * sampled ones, so hot instructions can be read in context. Needs a disassembler;
+     * without one, only sampled instructions are shown.
+     */
+    public InstructionProfileFormatter allInstructions() {
+        return new InstructionProfileFormatter(disassembler, true);
     }
 
     public void format(InstructionProfile profile, PrintStream out) {
         long total = profile.total();
         int methodSize = profile.methodSize();
-        int profileLength = profile.profileLength();
         byte[] code = profile.machineCode().orElse(null);
 
         out.println(profile.name());
         out.printf(Locale.ROOT, "  %s, compile id %d, %d bytes at 0x%016x, %d samples%n",
                 tier(profile.compLevel()), profile.compileId(), methodSize, profile.address(), total);
 
-        int[] offsets = sampledOffsets(profile, profileLength);
-        if (offsets.length == 0) {
+        List<Row> rows = rows(profile, code);
+        if (rows.isEmpty()) {
             out.println("  no samples at any instruction");
             return;
         }
-        String[] bytes = new String[offsets.length];
+        boolean disassembled = disassembler != null && code != null;
         int bytesWidth = "bytes".length();
-        for (int i = 0; i < offsets.length; i++) {
-            int next = i + 1 < offsets.length ? offsets[i + 1] : Integer.MAX_VALUE;
-            bytes[i] = instructionBytes(code, offsets[i], next);
-            bytesWidth = Math.max(bytesWidth, bytes[i].length());
+        int instructionWidth = "instruction".length();
+        for (Row row : rows) {
+            bytesWidth = Math.max(bytesWidth, row.bytes.length());
+            instructionWidth = Math.max(instructionWidth, row.instruction.length());
         }
 
         out.println();
-        out.printf(Locale.ROOT, "  %-18s  %-" + bytesWidth + "s  %7s  %7s%n", "pc", "bytes", "count", "%");
-        for (int i = 0; i < offsets.length; i++) {
-            int offset = offsets[i];
-            int count = profile.count(offset);
-            double percent = total == 0 ? 0 : 100.0 * count / total;
-            out.printf(Locale.ROOT, "  0x%016x  %-" + bytesWidth + "s  %7d  %6.2f%%%s%n",
-                    profile.address() + offset, bytes[i], count, percent, offset >= methodSize ? "  (stub)" : "");
+        String instructionHeader = disassembled ? String.format(Locale.ROOT, "  %-" + instructionWidth + "s", "instruction") : "";
+        out.printf(Locale.ROOT, "  %-18s  %-" + bytesWidth + "s%s  %7s  %7s%n", "pc", "bytes", instructionHeader, "count", "%");
+        for (Row row : rows) {
+            String instruction = disassembled ? String.format(Locale.ROOT, "  %-" + instructionWidth + "s", row.instruction) : "";
+            String count = row.count == 0 ? "" : Long.toString(row.count);
+            String percent = row.count == 0 ? "" : String.format(Locale.ROOT, "%6.2f%%", total == 0 ? 0 : 100.0 * row.count / total);
+            String line = String.format(Locale.ROOT, "  0x%016x  %-" + bytesWidth + "s%s  %7s  %7s%s",
+                    profile.address() + row.offset, row.bytes, instruction, count, percent,
+                    row.offset >= methodSize ? "  (stub)" : "");
+            out.println(line.stripTrailing());
         }
     }
 
-    private static int[] sampledOffsets(InstructionProfile profile, int profileLength) {
+    private record Row(int offset, String bytes, String instruction, long count) {}
+
+    private List<Row> rows(InstructionProfile profile, byte[] code) {
+        List<Row> rows = new ArrayList<>();
+        long address = profile.address();
+        if (allInstructions && disassembler != null && code != null) {
+            for (Instruction instruction : disassembler.decodeAll(code, address)) {
+                int offset = (int) (instruction.address() - address);
+                rows.add(new Row(offset, hex(code, offset, instruction.length()), text(instruction, profile),
+                        samples(profile, offset, instruction.length())));
+            }
+            return rows;
+        }
+        int[] sampled = sampledOffsets(profile);
+        for (int i = 0; i < sampled.length; i++) {
+            int offset = sampled[i];
+            long count = profile.count(offset);
+            if (code == null || offset >= code.length) {
+                rows.add(new Row(offset, "?", "?", count));
+            } else if (disassembler != null) {
+                Instruction instruction = disassembler.decode(code, offset, address + offset);
+                rows.add(new Row(offset, hex(code, offset, instruction.length()), text(instruction, profile), count));
+            } else {
+                int next = i + 1 < sampled.length ? Math.min(sampled[i + 1], code.length) : code.length;
+                int length = Math.max(1, Math.min(MAX_UNDECODED_BYTES, next - offset));
+                rows.add(new Row(offset, hex(code, offset, length), "", count));
+            }
+        }
+        return rows;
+    }
+
+    // The instruction's text, with a direct branch within the method annotated with the
+    // target's offset from the method's start.
+    private static String text(Instruction instruction, InstructionProfile profile) {
+        String text = instruction.text();
+        if (instruction.branchTarget().isPresent()) {
+            long target = instruction.branchTarget().getAsLong() - profile.address();
+            if (target >= 0 && target < profile.profileLength()) {
+                text += " <+0x" + Long.toHexString(target) + ">";
+            }
+        }
+        return text;
+    }
+
+    // Samples on any byte of the instruction: sampled PCs are instruction starts, but
+    // counting every byte doesn't depend on that.
+    private static long samples(InstructionProfile profile, int offset, int length) {
+        long count = 0;
+        for (int i = offset, end = Math.min(offset + length, profile.profileLength()); i < end; i++) {
+            count += profile.count(i);
+        }
+        return count;
+    }
+
+    private static int[] sampledOffsets(InstructionProfile profile) {
+        int profileLength = profile.profileLength();
         int sampled = 0;
         for (int offset = 0; offset < profileLength; offset++) {
             sampled += profile.count(offset) > 0 ? 1 : 0;
@@ -120,19 +185,15 @@ public final class InstructionProfileFormatter {
         return offsets;
     }
 
-    private String instructionBytes(byte[] code, int offset, int nextSampled) {
-        if (code == null || offset >= code.length) {
-            return "?";
-        }
-        int remaining = code.length - offset;
-        int length = Math.max(1, Math.min(remaining, lengths.at(code, offset, Math.min(nextSampled, code.length))));
+    private static String hex(byte[] code, int offset, int length) {
+        int end = Math.min(code.length, offset + length);
         StringBuilder hex = new StringBuilder(length * 3);
-        for (int i = 0; i < length; i++) {
-            if (i > 0) {
+        for (int i = offset; i < end; i++) {
+            if (i > offset) {
                 hex.append(' ');
             }
-            hex.append(Character.forDigit((code[offset + i] >> 4) & 0xF, 16));
-            hex.append(Character.forDigit(code[offset + i] & 0xF, 16));
+            hex.append(Character.forDigit((code[i] >> 4) & 0xF, 16));
+            hex.append(Character.forDigit(code[i] & 0xF, 16));
         }
         return hex.toString();
     }

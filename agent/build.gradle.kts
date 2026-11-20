@@ -120,6 +120,13 @@ val agentJar = configurations.create("agentJar") {
     isCanBeResolved = false
 }
 
+// The Java side uses the parse module's disassembler (InstructionProfileFormatter).
+// Declaring it on agentJar too passes it on to projects that consume the agent jar.
+dependencies {
+    "jvmImplementation"(project(":parse"))
+    agentJar(project(":parse"))
+}
+
 artifacts {
     add(agentJar.name, jvmJar)
 }

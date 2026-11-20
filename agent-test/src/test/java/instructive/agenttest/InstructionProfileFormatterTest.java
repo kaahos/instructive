@@ -1,12 +1,16 @@
 package instructive.agenttest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import instructive.agent.InstructionProfile;
 import instructive.agent.InstructionProfileFormatter;
 import instructive.agent.Sampler;
+import instructive.parse.Instruction;
+import instructive.parse.aarch64.Aarch64Disassembler;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -14,15 +18,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 class InstructionProfileFormatterTest {
     private static final String COMPILED = "instructive.agenttest.CodeCacheTest.compiledLoop(J)J";
-    private static final Pattern ROW =
-            Pattern.compile("  0x([0-9a-f]{16})  ([0-9a-f ?]+?)\\s+(\\d+)\\s+(\\d+\\.\\d{2})%(  \\(stub\\))?");
+
+    /** One table row, split at the header's column positions. */
+    record Row(long pc, String bytes, String instruction, long count, String percent, boolean stub) {}
 
     @AfterEach
     void stopSampler() {
@@ -30,7 +33,8 @@ class InstructionProfileFormatterTest {
     }
 
     @Test
-    void printsHeaderAndOneRowPerSampledPc() {
+    void printsHeaderAndDisassemblesEachSampledPc() {
+        assumeAarch64();
         InstructionProfile profile = hottestCompiledLoop();
         byte[] code = profile.machineCode().orElseThrow();
         List<String> lines = format(new InstructionProfileFormatter(), profile);
@@ -41,40 +45,88 @@ class InstructionProfileFormatterTest {
         assertTrue(lines.get(1).contains(profile.total() + " samples"), lines.get(1));
 
         List<Integer> sampled = sampledOffsets(profile);
-        List<Matcher> rows = rows(lines);
+        List<Row> rows = rows(lines);
         assertEquals(sampled.size(), rows.size(), () -> String.join("\n", lines));
+        Aarch64Disassembler disassembler = new Aarch64Disassembler();
         long sum = 0;
         for (int i = 0; i < rows.size(); i++) {
-            Matcher row = rows.get(i);
+            Row row = rows.get(i);
             int offset = sampled.get(i);
             // The PC is recovered from the base address and the count's position.
-            assertEquals(profile.address() + offset, Long.parseUnsignedLong(row.group(1), 16));
-            String bytes = row.group(2).trim();
-            byte[] shown = HexFormat.of().parseHex(bytes.replace(" ", ""));
-            byte[] expected = Arrays.copyOfRange(code, offset, offset + shown.length);
-            assertEquals(HexFormat.of().formatHex(expected), HexFormat.of().formatHex(shown), "bytes at +" + offset);
-            if (System.getProperty("os.arch").equals("aarch64")) {
-                assertEquals(4, shown.length, "aarch64 instructions are 4 bytes");
-            }
-            int count = Integer.parseInt(row.group(3));
-            assertEquals(profile.count(offset), count);
-            assertEquals(100.0 * count / profile.total(), Double.parseDouble(row.group(4)), 0.005);
-            sum += count;
+            assertEquals(profile.address() + offset, row.pc());
+            assertEquals(hex(Arrays.copyOfRange(code, offset, offset + 4)), row.bytes(), "bytes at +" + offset);
+            Instruction expected = disassembler.decode(code, offset, row.pc());
+            assertTrue(row.instruction().startsWith(expected.text()), () -> row + " vs " + expected);
+            assertEquals(profile.count(offset), row.count());
+            assertEquals(100.0 * row.count() / profile.total(), Double.parseDouble(row.percent().replace("%", "")), 0.005);
+            sum += row.count();
         }
         assertEquals(profile.sampled(), sum);
     }
 
     @Test
-    void variableLengthFallbackStopsAtTheNextSample() {
+    void listsEveryInstructionInContext() {
+        assumeAarch64();
         InstructionProfile profile = hottestCompiledLoop();
-        List<String> lines = format(new InstructionProfileFormatter(InstructionProfileFormatter.UP_TO_NEXT_SAMPLE), profile);
-        List<Integer> sampled = sampledOffsets(profile);
-        List<Matcher> rows = rows(lines);
+        byte[] code = profile.machineCode().orElseThrow();
+        List<String> lines = format(new InstructionProfileFormatter().allInstructions(), profile);
+        List<Row> rows = rows(lines);
+        // Every 4-byte instruction once, in order, sampled or not.
+        assertEquals(code.length / 4, rows.size(), () -> String.join("\n", lines));
         for (int i = 0; i < rows.size(); i++) {
-            int length = rows.get(i).group(2).trim().split(" ").length;
+            assertEquals(profile.address() + 4L * i, rows.get(i).pc());
+        }
+        assertEquals(profile.sampled(), rows.stream().mapToLong(Row::count).sum());
+        assertTrue(rows.stream().anyMatch(row -> row.count() == 0 && row.percent().isEmpty()), "cold rows are blank");
+        // The loop's back-edge points into the method, so it is annotated with an offset.
+        assertTrue(rows.stream().anyMatch(row -> row.instruction().matches("b\\.\\w+ 0x[0-9a-f]+ <\\+0x[0-9a-f]+>")),
+                () -> String.join("\n", lines));
+    }
+
+    @Test
+    void withoutADisassemblerShowsBytesUpToTheNextSample() {
+        InstructionProfile profile = hottestCompiledLoop();
+        List<String> lines = format(new InstructionProfileFormatter(null), profile);
+        assertFalse(lines.stream().anyMatch(line -> line.contains("instruction")), "no instruction column");
+        List<Integer> sampled = sampledOffsets(profile);
+        List<Row> rows = rows(lines);
+        assertEquals(sampled.size(), rows.size());
+        for (int i = 0; i < rows.size(); i++) {
+            int length = rows.get(i).bytes().split(" ").length;
             int gap = i + 1 < sampled.size() ? sampled.get(i + 1) - sampled.get(i) : Integer.MAX_VALUE;
             assertTrue(length >= 1 && length <= 15 && length <= gap, () -> String.join("\n", lines));
         }
+    }
+
+    private static void assumeAarch64() {
+        assumeTrue(InstructionProfileFormatter.forArchitecture(System.getProperty("os.arch")).isPresent());
+    }
+
+    // Splits rows using the header: "pc", "bytes" and "instruction" start their columns;
+    // "count" and "%" end theirs, being right-aligned in seven characters.
+    private static List<Row> rows(List<String> lines) {
+        String header = lines.stream().filter(line -> line.trim().startsWith("pc ")).findFirst().orElseThrow();
+        int bytes = header.indexOf("bytes");
+        int instruction = header.indexOf("instruction");
+        int countEnd = header.indexOf("count") + "count".length();
+        int percentEnd = header.lastIndexOf('%') + 1;
+        int bytesEnd = instruction >= 0 ? instruction : countEnd - 7;
+        List<Row> rows = new ArrayList<>();
+        for (String line : lines) {
+            if (!line.startsWith("  0x")) {
+                continue;
+            }
+            String padded = line.length() < percentEnd ? line + " ".repeat(percentEnd - line.length()) : line;
+            String count = padded.substring(countEnd - 7, countEnd).trim();
+            rows.add(new Row(
+                    Long.parseUnsignedLong(padded.substring(4, 20), 16),
+                    padded.substring(bytes, bytesEnd).trim(),
+                    instruction >= 0 ? padded.substring(instruction, countEnd - 7).trim() : "",
+                    count.isEmpty() ? 0 : Long.parseLong(count),
+                    padded.substring(percentEnd - 7, percentEnd).trim(),
+                    padded.substring(percentEnd).contains("(stub)")));
+        }
+        return rows;
     }
 
     private static List<String> format(InstructionProfileFormatter formatter, InstructionProfile profile) {
@@ -85,15 +137,12 @@ class InstructionProfileFormatterTest {
         return bytes.toString(StandardCharsets.UTF_8).lines().toList();
     }
 
-    private static List<Matcher> rows(List<String> lines) {
-        List<Matcher> rows = new ArrayList<>();
-        for (String line : lines) {
-            Matcher row = ROW.matcher(line);
-            if (row.matches()) {
-                rows.add(row);
-            }
+    private static String hex(byte[] bytes) {
+        List<String> pairs = new ArrayList<>();
+        for (byte b : bytes) {
+            pairs.add(HexFormat.of().toHexDigits(b));
         }
-        return rows;
+        return String.join(" ", pairs);
     }
 
     private static List<Integer> sampledOffsets(InstructionProfile profile) {

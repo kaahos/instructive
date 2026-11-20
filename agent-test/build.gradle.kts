@@ -2,9 +2,11 @@ plugins {
     java
 }
 
+// Just the agent jar, for -javaagent; its dependencies come through testImplementation.
 val agentJar = configurations.create("agentJar") {
     isCanBeConsumed = false
     isCanBeResolved = true
+    isTransitive = false
 }
 
 dependencies {
