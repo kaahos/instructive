@@ -140,6 +140,18 @@ Demo.sum([I)J
   0x00007f60dba92e5e  41 83 c2 08     add r10d, 0x8         18    6.06%
 ```
 
+## Analysis rules
+
+The `analyse` module has rules that read a method's machine code and instruction profile
+and explain what makes a hot loop slow. Each takes the decoded instructions, a register
+model and the samples per instruction, and returns its findings hottest first.
+
+| Rule | Finds | Section |
+|---|---|---|
+| `LongDependencyChainRule` | chains of instructions that each wait for the one before, within an iteration or carried from one iteration to the next | [Finding long dependency chains](#finding-long-dependency-chains) |
+| `NotUnrolledLoopRule` | hot loops handling one element per iteration, which C2 hasn't unrolled and so can't vectorise | [Finding loops that aren't unrolled](#finding-loops-that-arent-unrolled) |
+| `PointerChasingRule` | loops where each load's address comes from the previous iteration's load, as in walking a linked list | [Finding pointer chasing](#finding-pointer-chasing) |
+
 ## Finding long dependency chains
 
 An instruction profile shows where the time goes, but not why. One common reason a hot
@@ -608,6 +620,138 @@ loop.samples();            // 43, all of the method's
 The finding lists the loop's calls, since a call that isn't inlined is the usual reason,
 and whether the induction variable is 64-bit.
 
+## Finding pointer chasing
+
+Walking a linked structure, each load's address is the result of the load before it:
+`node = node.next`. An array walk computes every address from an index, so the CPU can
+issue many loads at once and the prefetcher can run ahead; a pointer chase can't start a
+load until the previous one has completed. The loop runs at the latency of its loads,
+and a cache miss on one node stalls everything after it.
+
+### LinkedList
+
+Summing the same 4,096 `Integer`s, through the same `List` interface:
+
+```java
+static int sum(List<Integer> list) {
+    int sum = 0;
+    for (int value : list) {
+        sum += value;
+    }
+    return sum;
+}
+```
+
+| | JDK 17 (Linux) | JDK 21 (Linux) | JDK 25 (Linux) | JDK 25 (macOS) |
+|---|---|---|---|---|
+| `ArrayList` | 0.35 ns/element | 0.36 | 0.35 | 0.35 |
+| `LinkedList` | 1.33 ns/element | 1.26 | 1.26 | 1.84 |
+
+C2 inlines the iterator and unrolls the `LinkedList` loop twice, so each iteration follows
+`next` twice. Here is the loop from the JDK 25 profile on Linux, where the small heap
+uses compressed references that need no decoding:
+
+```
+Chase.sum(Ljava/util/List;)I
+  tier 4 (C2), compile id 339, 1000 bytes at 0x0000ffffa3f63e80, 99 samples
+
+  pc                  bytes        instruction                         count        %
+  ...
+  0x0000ffffa3f63f80  e5 03 06 2a  mov w5, w6
+  0x0000ffffa3f63f84  11 12 40 b9  ldr w17, [x16, #0x10]
+  0x0000ffffa3f63f88  0e 0e 40 b9  ldr w14, [x16, #0xc]                    1    1.01%
+  0x0000ffffa3f63f8c  c3 09 40 b9  ldr w3, [x14, #0x8]                    56   56.57%
+  0x0000ffffa3f63f90  7f 00 0d 6b  cmp w3, w13                             4    4.04%
+  0x0000ffffa3f63f94  21 0c 00 54  b.ne 0xffffa3f64118 <+0x298>
+  0x0000ffffa3f63f98  30 12 40 b9  ldr w16, [x17, #0x10]
+  0x0000ffffa3f63f9c  ce 0d 40 b9  ldr w14, [x14, #0xc]
+  0x0000ffffa3f63fa0  22 0e 40 b9  ldr w2, [x17, #0xc]                    13   13.13%
+  0x0000ffffa3f63fa4  c0 01 00 0b  add w0, w14, w0
+  0x0000ffffa3f63fa8  62 03 00 34  cbz w2, 0xffffa3f64014 <+0x194>
+  0x0000ffffa3f63fac  43 08 40 b9  ldr w3, [x2, #0x8]                      5    5.05%
+  0x0000ffffa3f63fb0  7f 00 0a 6b  cmp w3, w10
+  0x0000ffffa3f63fb4  ee 03 02 aa  mov x14, x2
+  0x0000ffffa3f63fb8  c1 0a 00 54  b.ne 0xffffa3f64110 <+0x290>
+  0x0000ffffa3f63fbc  c2 0d 40 b9  ldr w2, [x14, #0xc]                    13   13.13%
+  0x0000ffffa3f63fc0  a6 08 00 11  add w6, w5, #0x2                        5    5.05%
+  0x0000ffffa3f63fc4  40 00 00 0b  add w0, w2, w0
+  0x0000ffffa3f63fc8  df 00 01 6b  cmp w6, w1
+  0x0000ffffa3f63fcc  ab fd ff 54  b.lt 0xffffa3f63f80 <+0x100>            1    1.01%
+  ...
+```
+
+`node.next` is loaded at `+0x104` into `w17`, and loaded again from that node at
+`+0x118`, into `w16`: the register the next iteration loads from. Hanging off each node
+are the loads of its `item` (`+0x108`, `+0x120`), the `Integer`'s class word, checked
+before the cast (`+0x10c`, `+0x12c`), and its `value` (`+0x11c`, `+0x13c`). Each of those
+waits on the node, and the first class check alone has 56 of the 99 samples.
+
+With a heap that needs shifted compressed references (macOS here), each reference is
+decoded with `lsl #3` before it can be used as an address, and that is on the chase too:
+
+```
+Chase.sum(Ljava/util/List;)I
+  tier 4 (C2), compile id 372, 1040 bytes at 0x000000011494e340, 86 samples
+
+  pc                  bytes        instruction                      count        %
+  ...
+  0x000000011494e440  e4 03 02 2a  mov w4, w2
+  0x000000011494e444  31 f0 7d d3  lsl x17, x1, #3
+  0x000000011494e448  2c 12 40 b9  ldr w12, [x17, #0x10]
+  0x000000011494e44c  31 0e 40 b9  ldr w17, [x17, #0xc]
+  0x000000011494e450  31 f2 7d d3  lsl x17, x17, #3
+  0x000000011494e454  22 0a 40 b9  ldr w2, [x17, #0x8]                 42   48.84%
+  0x000000011494e458  5f 00 0f 6b  cmp w2, w15
+  0x000000011494e45c  85 f1 7d d3  lsl x5, x12, #3                      1    1.16%
+  0x000000011494e460  e1 0c 00 54  b.ne 0x11494e5fc <+0x2bc>            2    2.33%
+  0x000000011494e464  a1 10 40 b9  ldr w1, [x5, #0x10]                  4    4.65%
+  0x000000011494e468  a2 0c 40 b9  ldr w2, [x5, #0xc]                   1    1.16%
+  0x000000011494e46c  27 0e 40 b9  ldr w7, [x17, #0xc]                 10   11.63%
+  0x000000011494e470  51 f0 7d d3  lsl x17, x2, #3
+  0x000000011494e474  e0 00 00 0b  add w0, w7, w0                       1    1.16%
+  0x000000011494e478  71 03 00 b4  cbz x17, 0x11494e4e4 <+0x1a4>
+  0x000000011494e47c  27 0a 40 b9  ldr w7, [x17, #0x8]                  9   10.47%
+  0x000000011494e480  ff 00 0d 6b  cmp w7, w13                          1    1.16%
+  0x000000011494e484  81 0b 00 54  b.ne 0x11494e5f4 <+0x2b4>
+  0x000000011494e488  22 0e 40 b9  ldr w2, [x17, #0xc]                 11   12.79%
+  0x000000011494e48c  40 00 00 0b  add w0, w2, w0
+  0x000000011494e490  82 08 00 11  add w2, w4, #0x2                     1    1.16%
+  0x000000011494e494  5f 00 06 6b  cmp w2, w6                           3    3.49%
+  0x000000011494e498  4b fd ff 54  b.lt 0x11494e440 <+0x100>
+  ...
+```
+
+### The rule
+
+`PointerChasingRule` looks for a loop-carried recurrence (see the dependency chains
+above) with a load on its cycle. A load only reads registers to form its address, so a
+load on the cycle has its address computed from the value the previous iteration carried
+in, whether as a base (`node.next`) or an index (`i = next[i]`). Decoding and register
+moves on the way are part of the cycle. For each, it reports:
+
+- the cycle and the loads on it, one per step of the chase;
+- the dereferences: the other loads in the loop whose address comes from the chase,
+  such as the `item`, class word and `value` loads above;
+- the loop's samples, and the samples on the chase and its dereferences.
+
+Loops with less than 10% of the method's samples, like the one-node loop C2 adds to
+finish an odd count, aren't reported. For the Linux profile above:
+
+```java
+List<Instruction> code = new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
+List<PointerChase> chases = new PointerChasingRule().apply(
+        code, new Aarch64RegisterModel(), i -> profile.count((int) (i.address() - profile.address())));
+PointerChase chase = chases.get(0);
+chase.carriedRegister();  // x16
+chase.cycle();            // ldr w17, [x16, #0x10]; ldr w16, [x17, #0x10]
+chase.dereferences();     // 6 loads: each node's item, its class and its value
+chase.samples();          // 98, the loop's
+chase.chaseSamples();     // 88 of them on the chase and its dereferences
+```
+
+The `ArrayList` loop has no finding: its recurrences are the sum and the index, neither
+through a load.
+
 ## Using it
 
 Load the native library, either with the Java agent (`-javaagent:agent.jar`) or by
@@ -686,6 +830,6 @@ published: build it locally.
   differences between these versions. On macOS, JDKs before 25 don't export the
   VMStructs symbols at all.
 - **Interpreted code** is counted, but not attributed to methods.
-- **Analysis rules** (`LongDependencyChainRule`, `NotUnrolledLoopRule`) work on AArch64
+- **Analysis rules** (`LongDependencyChainRule`, `NotUnrolledLoopRule`, `PointerChasingRule`) work on AArch64
   only so far: they need a register model, and only `Aarch64RegisterModel` exists. They
   track registers, not memory.

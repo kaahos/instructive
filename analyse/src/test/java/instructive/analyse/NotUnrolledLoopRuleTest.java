@@ -6,21 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import instructive.parse.Instruction;
 import instructive.parse.InstructionKind;
-import instructive.parse.aarch64.Aarch64Disassembler;
 import instructive.parse.aarch64.Aarch64RegisterModel;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HexFormat;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 class NotUnrolledLoopRuleTest {
-    private static final long BASE = 0x1000;
+    private static final long BASE = Listing.BASE;
 
     // A loop with a 64-bit counter, used as a scaled index: one element per iteration.
     private static final String[] WIDE_INDEX = {
@@ -53,12 +45,11 @@ class NotUnrolledLoopRuleTest {
         "c0 03 5f d6", // ret
     };
 
-    private final Aarch64Disassembler disassembler = new Aarch64Disassembler();
     private final Aarch64RegisterModel registers = new Aarch64RegisterModel();
 
     @Test
-    void findsTheLoopWhoseConditionCallsAMethod() throws IOException {
-        Profile method = load("sum-with-call-in-condition.tsv");
+    void findsTheLoopWhoseConditionCallsAMethod() {
+        Listing method = Listing.load("sum-with-call-in-condition.tsv");
         List<NotUnrolledLoop> loops = new NotUnrolledLoopRule().apply(method.code(), registers, method::count);
         assertEquals(1, loops.size(), () -> describe(loops));
         NotUnrolledLoop loop = loops.get(0);
@@ -81,9 +72,9 @@ class NotUnrolledLoopRuleTest {
     }
 
     @Test
-    void leavesUnrolledLoopsAndTheirColdTailsAlone() throws IOException {
+    void leavesUnrolledLoopsAndTheirColdTailsAlone() {
         // Unrolled 16 times (and vectorised); its post-loop steps by one, but is cold.
-        Profile method = load("sum.tsv");
+        Listing method = Listing.load("sum.tsv");
         assertTrue(new NotUnrolledLoopRule().apply(method.code(), registers, method::count).isEmpty());
         // Without samples, the post-loop is reported.
         List<NotUnrolledLoop> unsampled = new NotUnrolledLoopRule().apply(method.code(), registers);
@@ -94,10 +85,10 @@ class NotUnrolledLoopRuleTest {
     }
 
     @Test
-    void findsAnIndexScaledByAnInstructionOfItsOwn() throws IOException {
+    void findsAnIndexScaledByAnInstructionOfItsOwn() {
         // c[i] = a[i] + b[i] with limit(a) in the condition: i, in w29, is stepped by one
         // and scaled by sbfiz x10, x29, #2, #32 before it is added to each array.
-        Profile method = load("add-with-call-in-condition.tsv");
+        Listing method = Listing.load("add-with-call-in-condition.tsv");
         List<NotUnrolledLoop> loops = new NotUnrolledLoopRule().apply(method.code(), registers, method::count);
         assertEquals(1, loops.size(), () -> describe(loops));
         NotUnrolledLoop loop = loops.get(0);
@@ -110,23 +101,23 @@ class NotUnrolledLoopRuleTest {
     }
 
     @Test
-    void leavesAVectorisedLoopAlone() throws IOException {
+    void leavesAVectorisedLoopAlone() {
         // The same loop with a.length in the condition: 8 copies of 4-lane vector adds,
         // 32 elements per iteration, scaled by sbfiz just the same.
-        Profile method = load("add.tsv");
+        Listing method = Listing.load("add.tsv");
         assertTrue(new NotUnrolledLoopRule().apply(method.code(), registers, method::count).isEmpty());
         assertTrue(method.code().stream().filter(i -> i.kind() == InstructionKind.SIMD).count() >= 8);
     }
 
     @Test
     void leavesUnrolledRecurrencesAlone() {
-        assertTrue(new NotUnrolledLoopRule().apply(decode(LongDependencyChainRuleTest.HASH_LOOP), registers).isEmpty());
-        assertTrue(new NotUnrolledLoopRule().apply(decode(LongDependencyChainRuleTest.DELTA_LOOP), registers).isEmpty());
+        assertTrue(new NotUnrolledLoopRule().apply(Listing.decode(LongDependencyChainRuleTest.HASH_LOOP), registers).isEmpty());
+        assertTrue(new NotUnrolledLoopRule().apply(Listing.decode(LongDependencyChainRuleTest.DELTA_LOOP), registers).isEmpty());
     }
 
     @Test
     void flagsAWideCounter() {
-        List<NotUnrolledLoop> loops = new NotUnrolledLoopRule().apply(decode(WIDE_INDEX), registers);
+        List<NotUnrolledLoop> loops = new NotUnrolledLoopRule().apply(Listing.decode(WIDE_INDEX), registers);
         assertEquals(1, loops.size());
         assertEquals("x2", loops.get(0).inductionVariable());
         assertEquals(1, loops.get(0).step());
@@ -136,59 +127,22 @@ class NotUnrolledLoopRuleTest {
 
     @Test
     void countsAPointersStepInElements() {
-        List<NotUnrolledLoop> loops = new NotUnrolledLoopRule().apply(decode(POINTER), registers);
+        List<NotUnrolledLoop> loops = new NotUnrolledLoopRule().apply(Listing.decode(POINTER), registers);
         assertEquals(1, loops.size());
         assertEquals("x0", loops.get(0).inductionVariable());
         assertEquals(8, loops.get(0).step());
-        assertTrue(new NotUnrolledLoopRule().apply(decode(POINTER_PAIR), registers).isEmpty());
+        assertTrue(new NotUnrolledLoopRule().apply(Listing.decode(POINTER_PAIR), registers).isEmpty());
     }
 
     @Test
     void elementSizes() {
-        assertEquals(4, NotUnrolledLoopRule.elementSize(decode("6e 2d 40 b9").get(0))); // ldr w14, [x11, #0x2c]
-        assertEquals(8, NotUnrolledLoopRule.elementSize(decode("03 14 40 a9").get(0))); // ldp x3, x5, [x0]
-        assertEquals(8, NotUnrolledLoopRule.elementSize(decode("e2 07 00 f9").get(0))); // str x2, [sp, #0x8]
-        assertEquals(1, NotUnrolledLoopRule.elementSize(decode("20 00 40 39").get(0))); // ldrb w0, [x1]
-        assertEquals(2, NotUnrolledLoopRule.elementSize(decode("20 00 40 79").get(0))); // ldrh w0, [x1]
-        assertEquals(4, NotUnrolledLoopRule.elementSize(decode("20 00 80 b9").get(0))); // ldrsw x0, [x1]
-        assertEquals(8, NotUnrolledLoopRule.elementSize(decode("20 7c 02 c8").get(0))); // stxr w2, x0, [x1]
-    }
-
-    /** A method's code and per-instruction samples. */
-    private record Profile(List<Instruction> code, Map<Long, Long> samples) {
-        long count(Instruction instruction) {
-            return samples.getOrDefault(instruction.address(), 0L);
-        }
-
-        long total() {
-            return samples.values().stream().mapToLong(Long::longValue).sum();
-        }
-    }
-
-    private Profile load(String resource) throws IOException {
-        List<String> words = new ArrayList<>();
-        List<Long> counts = new ArrayList<>();
-        try (InputStream in = NotUnrolledLoopRuleTest.class.getResourceAsStream(resource)) {
-            for (String line : new String(in.readAllBytes(), StandardCharsets.UTF_8).split("\n")) {
-                if (line.isBlank() || line.startsWith("#")) {
-                    continue;
-                }
-                String[] columns = line.split("\t");
-                words.add(columns[0]);
-                counts.add(Long.parseLong(columns[1]));
-            }
-        }
-        List<Instruction> code = decode(words.toArray(String[]::new));
-        Map<Long, Long> samples = new HashMap<>();
-        for (int i = 0; i < code.size(); i++) {
-            samples.put(code.get(i).address(), counts.get(i));
-        }
-        return new Profile(code, samples);
-    }
-
-    private List<Instruction> decode(String... words) {
-        byte[] code = HexFormat.ofDelimiter(" ").parseHex(String.join(" ", words));
-        return disassembler.decodeAll(code, BASE);
+        assertEquals(4, NotUnrolledLoopRule.elementSize(Listing.decode("6e 2d 40 b9").get(0))); // ldr w14, [x11, #0x2c]
+        assertEquals(8, NotUnrolledLoopRule.elementSize(Listing.decode("03 14 40 a9").get(0))); // ldp x3, x5, [x0]
+        assertEquals(8, NotUnrolledLoopRule.elementSize(Listing.decode("e2 07 00 f9").get(0))); // str x2, [sp, #0x8]
+        assertEquals(1, NotUnrolledLoopRule.elementSize(Listing.decode("20 00 40 39").get(0))); // ldrb w0, [x1]
+        assertEquals(2, NotUnrolledLoopRule.elementSize(Listing.decode("20 00 40 79").get(0))); // ldrh w0, [x1]
+        assertEquals(4, NotUnrolledLoopRule.elementSize(Listing.decode("20 00 80 b9").get(0))); // ldrsw x0, [x1]
+        assertEquals(8, NotUnrolledLoopRule.elementSize(Listing.decode("20 7c 02 c8").get(0))); // stxr w2, x0, [x1]
     }
 
     private static String describe(List<NotUnrolledLoop> loops) {

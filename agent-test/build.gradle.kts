@@ -40,6 +40,7 @@ tasks.test {
             // NotUnrolledLoopTest: limit() stays a call in the loop's condition, and each
             // loop is profiled as a method of its own.
             "-XX:CompileCommand=dontinline,instructive.agenttest.NotUnrolledLoopTest::*",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.PointerChasingTest::sum*",
         )
     })
 }
