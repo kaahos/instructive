@@ -140,6 +140,101 @@ Demo.sum([I)J
   0x00007f60dba92e5e  41 83 c2 08     add r10d, 0x8         18    6.06%
 ```
 
+## Finding long dependency chains
+
+An instruction profile shows where the time goes, but not why. One common reason a hot
+loop is slow is a long *dependency chain*: each instruction needs the result of the one
+before it. A modern core can run several instructions per cycle, but not instructions
+that wait on each other, so a loop dominated by one chain runs at the chain's latency
+rather than at the core's throughput. The `analyse` module finds such chains
+automatically, from the instruction stream alone.
+
+### The hash loop
+
+`Arrays.hashCode(int[])` computes `h = 31 * h + a[i]`. Each element's hash depends on
+the previous element's, so however many elements C2 handles per loop iteration, they
+form a single chain. With the vectorised intrinsic disabled
+(`-XX:-UseVectorizedHashCodeIntrinsic`), C2 on AArch64 unrolls the loop 8 times and
+computes `31 * h` as `(h << 5) - h`. The first two of the eight elements look like this:
+
+```
+lsl w11, w4, #5         // h << 5            (h is in w4)
+ldr w12, [x1, #0x10]    // a[i]
+sub w11, w11, w4        // (h << 5) - h      needs the lsl
+add w12, w11, w12       // + a[i]            needs the sub: h for the next element
+lsl w14, w12, #5        //                   needs the add
+ldr w11, [x1, #0x14]    // a[i + 1]
+sub w12, w14, w12       //                   needs the lsl
+add w12, w12, w11       //                   needs the sub
+...                     // six more elements
+add w4, w12, w11        // h for the next iteration
+```
+
+The loads don't depend on `h` and can run ahead. The `lsl`, `sub` and `add` of each
+element can't: each waits for the one before.
+
+### Turning the stream into chains
+
+`DependencyGraph` walks the method's instructions in address order and keeps track of
+the last instruction to write each register. For every instruction it links each
+register it reads to that register's most recent writer: the closest predecessor that
+produced its input. Applied recursively, the links form chains back through the code.
+An instruction's chain length is one more than the longest chain among the instructions
+it depends on.
+
+Two things make this work:
+- **Register usage.** `Aarch64RegisterModel` derives which registers each decoded
+  instruction reads and writes, and treats `w4` and `x4` as the same register.
+- **Undecoded instructions.** An instruction the decoder can't read might write any
+  register, so it breaks every chain through it.
+
+In the hash loop each `add` links back to its `sub`, each `sub` to its `lsl`, and each
+`lsl` to the previous element's `add`. That gives a chain three instructions longer for
+every element, 24 across the unrolled body.
+
+### Flagging the chain
+
+`LongDependencyChainRule` reports every chain of at least 16 instructions that no later
+instruction extends. Here is its top finding for the compiled
+`ArraysSupport.hashCode([IIII)I`, abridged, with offsets from the start of the method:
+
+```
+hottest chain: 32 instructions, 0 samples on it, 71 in the code it spans
+  +0x028  mov x10, x1
+  +0x078  add x11, x10, w2, sxtw #2
+  +0x07c  ldr w12, [x11, #0x10]
+  +0x08c  add w4, w13, w12
+  +0x0c4  lsl w11, w4, #5        <- the unrolled loop body starts here
+  +0x0cc  sub w11, w11, w4
+  +0x0d0  add w12, w11, w12
+  ...                             24 instructions: lsl, sub, add for each of 8 elements
+  +0x144  add w4, w12, w11       <- and ends here, carrying h round the loop
+  +0x170  lsl w11, w4, #5
+  +0x174  sub w13, w11, w4
+  +0x17c  add w4, w13, w12
+  +0x188  mov w0, w4
+```
+
+The chain's core is the 24-instruction loop body. Because links follow the code's
+layout rather than its control flow, the chain also takes in the peeled iteration
+before the loop and the tail after it.
+
+None of the method's 71 samples landed on the chain's own instructions. 84% of them
+landed on one of the loads instead. That's *skid*: a sample lands on an instruction
+waiting near the stall, not on the instructions causing it. So the rule ranks chains by
+`spanSamples`, the samples on every instruction between a chain's first and last. This
+chain spans all 71, which puts it first.
+
+```java
+List<Instruction> code = new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
+List<DependencyChain> chains = new LongDependencyChainRule().apply(
+        code, new Aarch64RegisterModel(), i -> profile.count((int) (i.address() - profile.address())));
+```
+
+The analysis tracks registers only. Condition flags are left out, so a compare followed
+by a branch isn't counted as a data dependency, and so are memory dependencies through
+stores and loads.
+
 ## Using it
 
 Load the native library, either with the Java agent (`-javaagent:agent.jar`) or by
