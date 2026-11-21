@@ -24,15 +24,19 @@ namespace instructive {
 // process-wide timer, delivered to whichever thread the kernel picks; thread_started()
 // and thread_ended() do nothing.
 //
-// The SIGPROF handler is installed on the first start() and chains to whichever
-// handler was registered before it. It stays installed across stop()/start() so a
-// handler registered after ours keeps its chain intact, and is only removed on
-// destruction if it is still the current handler. The handler state is process-wide,
-// so only one CpuTimer may exist at a time.
+// The SIGPROF handler is installed on the first start() and stays installed across
+// stop()/start(). It does not chain to a handler registered before it: other sources
+// of SIGPROF may be present, and their signals are not ours to interpret. On Linux,
+// every timer labels its signals with a tag in sigev_value, and the handler ignores
+// any SIGPROF that isn't a timer signal carrying that tag, such as one sent with kill()
+// or raised by someone else's timer. setitimer signals carry no value, so on macOS
+// every SIGPROF received while started is taken as ours. On destruction the previous
+// handler is restored, if ours is still the current one. The handler state is
+// process-wide, so only one CpuTimer may exist at a time.
 class CpuTimer {
 public:
-    // Called from the SIGPROF handler while the timer is started, before delegating to
-    // the previous handler. Must be async-signal-safe.
+    // Called from the SIGPROF handler for each of our signals while the timer is
+    // started. Must be async-signal-safe.
     using Callback = void (*)(siginfo_t* info, void* ucontext);
 
     explicit CpuTimer(Callback callback);
@@ -55,7 +59,7 @@ public:
     // JVMTI ThreadEnd.
     void thread_ended();
 
-    // Number of SIGPROF signals handled while the timer was started.
+    // Number of our SIGPROF signals handled while the timer was started.
     static uint64_t ticks();
 
 private:

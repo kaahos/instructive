@@ -18,7 +18,8 @@ namespace {
 
 constexpr long INTERVAL_NANOS = 10'000'000;  // 10ms
 
-// Written before our handler is installed and only read afterwards.
+// The handler that was registered before ours, restored when ours is removed. Written
+// before our handler is installed and only read afterwards.
 struct sigaction previous_action;
 bool installed = false;
 
@@ -26,25 +27,32 @@ std::atomic<bool> active{false};
 std::atomic<CpuTimer::Callback> callback{nullptr};
 std::atomic<uint64_t> tick_count{0};
 
+#if defined(__linux__)
+// Labels our timers' signals: its address goes in sigev_value and comes back in
+// si_value.
+char own_signal_tag;
+#endif
+
+// Whether a SIGPROF came from one of our timers.
+bool is_own_signal(const siginfo_t* info) {
+#if defined(__linux__)
+    return info != nullptr && info->si_code == SI_TIMER && info->si_value.sival_ptr == &own_signal_tag;
+#else
+    // setitimer signals can't be labelled.
+    return true;
+#endif
+}
+
 void handle_sigprof(int signo, siginfo_t* info, void* ucontext) {
+    if (!active.load(std::memory_order_relaxed) || !is_own_signal(info)) {
+        return;
+    }
     // Preserve errno for the interrupted code.
     int saved_errno = errno;
-    if (active.load(std::memory_order_relaxed)) {
-        tick_count.fetch_add(1, std::memory_order_relaxed);
-        CpuTimer::Callback on_tick = callback.load(std::memory_order_acquire);
-        if (on_tick != nullptr) {
-            on_tick(info, ucontext);
-        }
-    }
-
-    // Delegate to the handler that was registered before ours. SIG_DFL is not
-    // delegated to because SIGPROF's default action terminates the process.
-    if (previous_action.sa_flags & SA_SIGINFO) {
-        if (previous_action.sa_sigaction != nullptr && previous_action.sa_sigaction != handle_sigprof) {
-            previous_action.sa_sigaction(signo, info, ucontext);
-        }
-    } else if (previous_action.sa_handler != SIG_DFL && previous_action.sa_handler != SIG_IGN) {
-        previous_action.sa_handler(signo);
+    tick_count.fetch_add(1, std::memory_order_relaxed);
+    CpuTimer::Callback on_tick = callback.load(std::memory_order_acquire);
+    if (on_tick != nullptr) {
+        on_tick(info, ucontext);
     }
     errno = saved_errno;
 }
@@ -128,6 +136,7 @@ bool CpuTimer::create_timer(pid_t tid) {
     event.sigev_notify = SIGEV_THREAD_ID;
     event.sigev_signo = SIGPROF;
     event.sigev_notify_thread_id = tid;
+    event.sigev_value.sival_ptr = &own_signal_tag;
     timer_t timer;
     if (timer_create(thread_cpu_clock(tid), &event, &timer) != 0) {
         return false;
