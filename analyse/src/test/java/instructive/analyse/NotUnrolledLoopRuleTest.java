@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import instructive.parse.Instruction;
+import instructive.parse.InstructionKind;
 import instructive.parse.aarch64.Aarch64Disassembler;
 import instructive.parse.aarch64.Aarch64RegisterModel;
 import java.io.IOException;
@@ -90,6 +91,31 @@ class NotUnrolledLoopRuleTest {
         assertEquals(BASE + 0x124, unsampled.get(0).header());
         assertEquals(List.of("add w16, w16, #0x1"),
                 unsampled.get(0).stepInstructions().stream().map(Instruction::text).toList());
+    }
+
+    @Test
+    void findsAnIndexScaledByAnInstructionOfItsOwn() throws IOException {
+        // c[i] = a[i] + b[i] with limit(a) in the condition: i, in w29, is stepped by one
+        // and scaled by sbfiz x10, x29, #2, #32 before it is added to each array.
+        Profile method = load("add-with-call-in-condition.tsv");
+        List<NotUnrolledLoop> loops = new NotUnrolledLoopRule().apply(method.code(), registers, method::count);
+        assertEquals(1, loops.size(), () -> describe(loops));
+        NotUnrolledLoop loop = loops.get(0);
+        assertEquals(BASE + 0x80, loop.header());
+        assertEquals("x29", loop.inductionVariable());
+        assertEquals(1, loop.step());
+        assertEquals(List.of("add w29, w29, #0x1"), loop.stepInstructions().stream().map(Instruction::text).toList());
+        assertEquals(1, loop.calls().size());
+        assertTrue(loop.instructions().stream().noneMatch(i -> i.kind() == InstructionKind.SIMD));
+    }
+
+    @Test
+    void leavesAVectorisedLoopAlone() throws IOException {
+        // The same loop with a.length in the condition: 8 copies of 4-lane vector adds,
+        // 32 elements per iteration, scaled by sbfiz just the same.
+        Profile method = load("add.tsv");
+        assertTrue(new NotUnrolledLoopRule().apply(method.code(), registers, method::count).isEmpty());
+        assertTrue(method.code().stream().filter(i -> i.kind() == InstructionKind.SIMD).count() >= 8);
     }
 
     @Test

@@ -1,0 +1,167 @@
+# Vec.add([I[I[I)V: for (int i = 0; i < a.length; i++) c[i] = a[i] + b[i], vectorised
+# C2 on JDK 25, Linux aarch64, one second of samples. Columns: bytes, samples, offset and disassembly.
+1f 20 03 d5	0	+0x000  nop
+e9 53 40 d1	0	+0x004  sub x9, sp, #0x14, lsl #12
+3f 01 00 f9	0	+0x008  str xzr, [x9]
+ff 03 01 d1	0	+0x00c  sub sp, sp, #0x40
+fd 7b 03 a9	0	+0x010  stp x29, x30, [sp, #0x30]
+08 14 00 18	0	+0x014  ldr w8, 0xffff73f63d14
+89 23 40 b9	1	+0x018  ldr w9, [x28, #0x20]
+1f 01 09 eb	0	+0x01c  cmp x8, x9
+01 13 00 54	0	+0x020  b.ne 0xffff73f63d00 <+0x280>
+ee 03 01 aa	0	+0x024  mov x14, x1
+2a 0c 40 b9	0	+0x028  ldr w10, [x1, #0xc]
+ea 0f 00 34	0	+0x02c  cbz w10, 0xffff73f63ca8 <+0x228>
+ec 03 03 2a	0	+0x030  mov w12, w3
+eb 6f 1c 32	0	+0x034  orr w11, wzr, #0xfffffff0
+6c 01 0c 4b	0	+0x038  sub w12, w11, w12
+8b 7d 02 53	0	+0x03c  lsr w11, w12, #2
+6d 05 00 51	0	+0x040  sub w13, w11, #0x1
+4b 05 00 51	0	+0x044  sub w11, w10, #0x1
+ec 03 1f 2a	0	+0x048  mov w12, wzr
+7f 01 0a 6b	0	+0x04c  cmp w11, w10
+82 0f 00 54	0	+0x050  b.hs 0xffff73f63cc0 <+0x240>
+4f 0c 40 b9	0	+0x054  ldr w15, [x2, #0xc]
+ad 05 40 d3	0	+0x058  ubfx x13, x13, #0, #2
+50 7d 40 93	0	+0x05c  sxtw x16, w10
+ad 05 00 91	0	+0x060  add x13, x13, #0x1
+ef 0e 00 34	0	+0x064  cbz w15, 0xffff73f63cc0 <+0x240>
+7f 01 0f 6b	0	+0x068  cmp w11, w15
+a2 0e 00 54	0	+0x06c  b.hs 0xffff73f63cc0 <+0x240>
+6f 0c 40 b9	0	+0x070  ldr w15, [x3, #0xc]
+bf 01 10 eb	0	+0x074  cmp x13, x16
+ad b1 90 9a	0	+0x078  csel x13, x13, x16, lt
+40 7d 00 51	0	+0x07c  sub w0, w10, #0x1f
+ed 03 0d 2a	0	+0x080  mov w13, w13
+ef 0d 00 34	0	+0x084  cbz w15, 0xffff73f63cc0 <+0x240>
+7f 01 0f 6b	0	+0x088  cmp w11, w15
+a2 0d 00 54	0	+0x08c  b.hs 0xffff73f63cc0 <+0x240>
+8b 7d 7e 93	0	+0x090  sbfiz x11, x12, #2, #32
+cf 01 0b 8b	0	+0x094  add x15, x14, x11
+50 00 0b 8b	0	+0x098  add x16, x2, x11
+ef 11 40 b9	0	+0x09c  ldr w15, [x15, #0x10]
+11 12 40 b9	0	+0x0a0  ldr w17, [x16, #0x10]
+ef 01 11 0b	0	+0x0a4  add w15, w15, w17
+6b 00 0b 8b	0	+0x0a8  add x11, x3, x11
+6f 11 00 b9	0	+0x0ac  str w15, [x11, #0x10]
+8b 05 00 11	0	+0x0b0  add w11, w12, #0x1
+7f 01 0d 6b	0	+0x0b4  cmp w11, w13
+6a 00 00 54	0	+0x0b8  b.ge 0xffff73f63b44 <+0xc4>
+ec 03 0b 2a	0	+0x0bc  mov w12, w11
+f4 ff ff 17	0	+0x0c0  b 0xffff73f63b10 <+0x90>
+7f 01 00 6b	0	+0x0c4  cmp w11, w0
+6a 09 00 54	0	+0x0c8  b.ge 0xffff73f63c74 <+0x1f4>
+92 05 00 11	0	+0x0cc  add w18, w12, #0x1
+0d a0 8f 52	0	+0x0d0  mov w13, #0x7d00
+30 00 00 14	0	+0x0d4  b 0xffff73f63c14 <+0x194>
+1f 20 03 d5	0	+0x0d8  nop
+1f 20 03 d5	0	+0x0dc  nop
+f2 03 0b 2a	0	+0x0e0  mov w18, w11
+4b 7e 7e 93	1	+0x0e4  sbfiz x11, x18, #2, #32
+cf 01 0b 8b	0	+0x0e8  add x15, x14, x11
+50 00 0b 8b	0	+0x0ec  add x16, x2, x11
+f0 05 c0 3d	0	+0x0f0  ldr q16, [x15, #0x10]
+11 06 c0 3d	0	+0x0f4  ldr q17, [x16, #0x10]
+10 86 b1 4e	0	+0x0f8  .word 0x4eb18610
+6b 00 0b 8b	0	+0x0fc  add x11, x3, x11
+70 05 80 3d	0	+0x100  str q16, [x11, #0x10]
+10 0a c0 3d	0	+0x104  ldr q16, [x16, #0x20]
+f1 09 c0 3d	0	+0x108  ldr q17, [x15, #0x20]
+10 86 b1 4e	0	+0x10c  .word 0x4eb18610
+70 09 80 3d	0	+0x110  str q16, [x11, #0x20]
+10 0e c0 3d	3	+0x114  ldr q16, [x16, #0x30]
+f1 0d c0 3d	10	+0x118  ldr q17, [x15, #0x30]
+10 86 b1 4e	0	+0x11c  .word 0x4eb18610
+70 0d 80 3d	1	+0x120  str q16, [x11, #0x30]
+10 12 c0 3d	1	+0x124  ldr q16, [x16, #0x40]
+f1 11 c0 3d	1	+0x128  ldr q17, [x15, #0x40]
+10 86 b1 4e	0	+0x12c  .word 0x4eb18610
+70 11 80 3d	0	+0x130  str q16, [x11, #0x40]
+10 16 c0 3d	0	+0x134  ldr q16, [x16, #0x50]
+f1 15 c0 3d	0	+0x138  ldr q17, [x15, #0x50]
+10 86 b1 4e	0	+0x13c  .word 0x4eb18610
+70 15 80 3d	7	+0x140  str q16, [x11, #0x50]
+10 1a c0 3d	5	+0x144  ldr q16, [x16, #0x60]
+f1 19 c0 3d	10	+0x148  ldr q17, [x15, #0x60]
+10 86 b1 4e	1	+0x14c  .word 0x4eb18610
+70 19 80 3d	0	+0x150  str q16, [x11, #0x60]
+f0 1d c0 3d	0	+0x154  ldr q16, [x15, #0x70]
+11 1e c0 3d	0	+0x158  ldr q17, [x16, #0x70]
+10 86 b1 4e	0	+0x15c  .word 0x4eb18610
+70 1d 80 3d	5	+0x160  str q16, [x11, #0x70]
+f0 21 c0 3d	2	+0x164  ldr q16, [x15, #0x80]
+11 22 c0 3d	17	+0x168  ldr q17, [x16, #0x80]
+10 86 b1 4e	0	+0x16c  .word 0x4eb18610
+70 21 80 3d	24	+0x170  str q16, [x11, #0x80]
+4b 82 00 11	0	+0x174  add w11, w18, #0x20
+7f 01 0c 6b	0	+0x178  cmp w11, w12
+2b fb ff 54	0	+0x17c  b.lt 0xffff73f63b60 <+0xe0>
+8c 1b 40 f9	2	+0x180  ldr x12, [x28, #0x30]
+9f 01 40 b9	0	+0x184  ldr wzr, [x12]
+7f 01 00 6b	0	+0x188  cmp w11, w0
+6a 01 00 54	0	+0x18c  b.ge 0xffff73f63c38 <+0x1b8>
+f2 03 0b 2a	0	+0x190  mov w18, w11
+4b 01 12 4b	0	+0x194  sub w11, w10, w18
+6c 7d 00 51	0	+0x198  sub w12, w11, #0x1f
+1f 00 12 6b	0	+0x19c  cmp w0, w18
+ec b3 8c 1a	0	+0x1a0  csel w12, wzr, w12, lt
+08 a0 8f 52	0	+0x1a4  mov w8, #0x7d00
+9f 01 08 6b	0	+0x1a8  cmp w12, w8
+ac 81 8c 1a	0	+0x1ac  csel w12, w13, w12, hi
+8c 01 12 0b	0	+0x1b0  add w12, w12, w18
+cc ff ff 17	0	+0x1b4  b 0xffff73f63b64 <+0xe4>
+4c 0d 00 51	0	+0x1b8  sub w12, w10, #0x3
+7f 01 0c 6b	0	+0x1bc  cmp w11, w12
+aa 01 00 54	0	+0x1c0  b.ge 0xffff73f63c74 <+0x1f4>
+4b 82 00 11	0	+0x1c4  add w11, w18, #0x20
+6d 7d 7e 93	0	+0x1c8  sbfiz x13, x11, #2, #32
+cf 01 0d 8b	0	+0x1cc  add x15, x14, x13
+50 00 0d 8b	0	+0x1d0  add x16, x2, x13
+f0 05 c0 3d	0	+0x1d4  ldr q16, [x15, #0x10]
+11 06 c0 3d	0	+0x1d8  ldr q17, [x16, #0x10]
+10 86 b1 4e	0	+0x1dc  .word 0x4eb18610
+6d 00 0d 8b	0	+0x1e0  add x13, x3, x13
+b0 05 80 3d	0	+0x1e4  str q16, [x13, #0x10]
+6b 11 00 11	0	+0x1e8  add w11, w11, #0x4
+7f 01 0c 6b	0	+0x1ec  cmp w11, w12
+cb fe ff 54	0	+0x1f0  b.lt 0xffff73f63c48 <+0x1c8>
+7f 01 0a 6b	0	+0x1f4  cmp w11, w10
+8a 01 00 54	0	+0x1f8  b.ge 0xffff73f63ca8 <+0x228>
+6c 7d 7e 93	0	+0x1fc  sbfiz x12, x11, #2, #32
+cd 01 0c 8b	0	+0x200  add x13, x14, x12
+4f 00 0c 8b	0	+0x204  add x15, x2, x12
+ad 11 40 b9	0	+0x208  ldr w13, [x13, #0x10]
+f0 11 40 b9	0	+0x20c  ldr w16, [x15, #0x10]
+ad 01 10 0b	0	+0x210  add w13, w13, w16
+6c 00 0c 8b	0	+0x214  add x12, x3, x12
+8d 11 00 b9	0	+0x218  str w13, [x12, #0x10]
+6b 05 00 11	0	+0x21c  add w11, w11, #0x1
+7f 01 0a 6b	0	+0x220  cmp w11, w10
+cb fe ff 54	0	+0x224  b.lt 0xffff73f63c7c <+0x1fc>
+fd 7b 43 a9	0	+0x228  ldp x29, x30, [sp, #0x30]
+ff 03 01 91	0	+0x22c  add sp, sp, #0x40
+88 17 40 f9	0	+0x230  ldr x8, [x28, #0x28]
+ff 63 28 eb	0	+0x234  cmp sp, x8
+e8 01 00 54	0	+0x238  b.hi 0xffff73f63cf4 <+0x274>
+c0 03 5f d6	0	+0x23c  ret
+21 12 80 12	0	+0x240  mov w1, #-0x92
+fd 03 0e aa	0	+0x244  mov x29, x14
+e2 0f 00 a9	0	+0x248  stp x2, x3, [sp]
+ea 13 00 b9	0	+0x24c  str w10, [sp, #0x10]
+7c b4 ed 97	0	+0x250  bl 0xffff73ad0ec0
+1f 20 03 d5	0	+0x254  nop
+9f 69 80 f2	0	+0x258  movk xzr, #0x34c
+1f 20 80 f2	0	+0x25c  movk xzr, #0x100
+21 01 80 12	0	+0x260  mov w1, #-0xa
+77 b4 ed 97	0	+0x264  bl 0xffff73ad0ec0
+1f 20 03 d5	0	+0x268  nop
+1f 6c 80 f2	0	+0x26c  movk xzr, #0x360
+1f 40 80 f2	0	+0x270  movk xzr, #0x200
+e8 fd ff 10	0	+0x274  adr x8, 0xffff73f63cb0
+88 a3 02 f9	0	+0x278  str x8, [x28, #0x540]
+e1 63 ea 17	0	+0x27c  b 0xffff739fcc80
+08 30 88 d2	0	+0x280  mov x8, #0x4180
+08 74 ae f2	0	+0x284  movk x8, #0x73a0, lsl #16
+e8 ff df f2	0	+0x288  movk x8, #0xffff, lsl #32
+00 01 3f d6	0	+0x28c  blr x8
+65 ff ff 17	0	+0x290  b 0xffff73f63aa4 <+0x24>

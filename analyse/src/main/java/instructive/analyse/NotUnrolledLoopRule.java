@@ -29,7 +29,8 @@ import java.util.regex.Pattern;
  * used:
  * <ul>
  *   <li>as a scaled or extended index ({@code add x10, x11, w13, sxtw #2}, or
- *       {@code [x1, x2, lsl #2]}), it counts elements, so a step of one is one
+ *       {@code [x1, x2, lsl #2]}), or scaled by an instruction of its own
+ *       ({@code sbfiz x10, x29, #2, #32}), it counts elements, so a step of one is one
  *       element;</li>
  *   <li>as a load or store's base register, it counts bytes, so a step of one
  *       register's width is one element: a load of a pair covers two.</li>
@@ -49,6 +50,10 @@ public final class NotUnrolledLoopRule {
 
     // A register operand extended or shifted, as an index is: "w13, sxtw #2", "x2, lsl #2".
     private static final Pattern INDEX = Pattern.compile("\\b[wx](\\d+), (?:sxtw|uxtw|sxtx|uxtx|lsl)\\b");
+    // An instruction scaling or extending its source on its own, as an index:
+    // "sbfiz x10, x29, #2, #32", "lsl x1, x2, #3", "sxtw x1, w2".
+    private static final Pattern SCALE = Pattern.compile("[wx]\\d+, [wx](\\d+)(?:, #\\d+)*");
+    private static final Set<String> SCALING = Set.of("sbfiz", "ubfiz", "lsl", "sxtw", "uxtw");
     private static final Pattern STEP = Pattern.compile("[wx](\\d+), [wx](\\d+), #(-?0x[0-9a-f]+|-?\\d+)(?:, lsl #12)?");
     private static final Pattern MOVE = Pattern.compile("[wx](\\d+), [wx](\\d+)");
     private static final Pattern BASE = Pattern.compile("\\[([wx]\\d+|sp)\\b");
@@ -205,6 +210,10 @@ public final class NotUnrolledLoopRule {
             Set<String> fromVariable = readsFrom(graph, registers, i, cycle, variable.registers());
             if (fromVariable.isEmpty()) {
                 continue;
+            }
+            Matcher scale = SCALE.matcher(instruction.operands());
+            if (SCALING.contains(instruction.mnemonic()) && scale.matches() && fromVariable.contains("x" + scale.group(1))) {
+                most = Math.max(most, Math.abs(variable.step()));
             }
             Matcher index = INDEX.matcher(instruction.operands());
             while (index.find()) {

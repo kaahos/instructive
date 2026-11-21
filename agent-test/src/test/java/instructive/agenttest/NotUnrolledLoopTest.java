@@ -12,6 +12,7 @@ import instructive.agent.Sampler;
 import instructive.analyse.NotUnrolledLoop;
 import instructive.analyse.NotUnrolledLoopRule;
 import instructive.parse.Instruction;
+import instructive.parse.InstructionKind;
 import instructive.parse.aarch64.Aarch64Disassembler;
 import instructive.parse.aarch64.Aarch64RegisterModel;
 import java.io.ByteArrayOutputStream;
@@ -68,6 +69,71 @@ class NotUnrolledLoopTest {
         assertTrue(loops.isEmpty(), describe(profile, loops));
     }
 
+    /**
+     * The same operation on every element, nothing carried between them: C2 vectorises
+     * it. Vectorising works on an unrolled loop, combining the unrolled copies into
+     * vector instructions.
+     */
+    @Test
+    void leavesAVectorisedLoopAlone() {
+        InstructionProfile profile = profile("add", NotUnrolledLoopTest::add);
+        List<NotUnrolledLoop> loops = apply(profile);
+        String report = describe(profile, loops);
+        assertTrue(loops.isEmpty(), report);
+        assertTrue(simd(instructions(profile)) > 0, report);
+    }
+
+    /**
+     * The same kernel, but with a call in the condition, C2 can't unroll the loop, so it
+     * can't vectorise it either.
+     */
+    @Test
+    void findsALoopThatCouldNotBeVectorised() {
+        InstructionProfile profile = profile("addWithCallInCondition", NotUnrolledLoopTest::addWithCallInCondition);
+        List<NotUnrolledLoop> loops = apply(profile);
+        String report = describe(profile, loops);
+        assertEquals(1, loops.size(), report);
+        NotUnrolledLoop loop = loops.get(0);
+        assertEquals(1, loop.step(), report);
+        assertEquals(1, loop.calls().size(), report);
+        assertEquals(0, simd(loop.instructions()), report);
+        assertTrue(loop.samples() * 10 >= profile.sampled() * 9, report);
+    }
+
+    static void add(int[] a, int[] b, int[] c) {
+        for (int i = 0; i < a.length; i++) {
+            c[i] = a[i] + b[i];
+        }
+    }
+
+    static void addWithCallInCondition(int[] a, int[] b, int[] c) {
+        for (int i = 0; i < limit(a); i++) {
+            c[i] = a[i] + b[i];
+        }
+    }
+
+    private interface TriConsumer {
+        void accept(int[] a, int[] b, int[] c);
+    }
+
+    private static InstructionProfile profile(String name, TriConsumer kernel) {
+        int[] a = new int[1 << 12];
+        int[] b = new int[a.length];
+        int[] c = new int[a.length];
+        for (int i = 0; i < a.length; i++) {
+            a[i] = i;
+            b[i] = 3 * i;
+        }
+        return profile(name, data -> {
+            kernel.accept(a, b, c);
+            return c[1];
+        });
+    }
+
+    private static long simd(List<Instruction> instructions) {
+        return instructions.stream().filter(instruction -> instruction.kind() == InstructionKind.SIMD).count();
+    }
+
     static int sum(int[] data) {
         int sum = 0;
         for (int i = 0; i < data.length; i++) {
@@ -96,8 +162,12 @@ class NotUnrolledLoopTest {
         return data.length;
     }
 
+    private static List<Instruction> instructions(InstructionProfile profile) {
+        return new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
+    }
+
     private static List<NotUnrolledLoop> apply(InstructionProfile profile) {
-        List<Instruction> code = new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
+        List<Instruction> code = instructions(profile);
         return new NotUnrolledLoopRule().apply(code, new Aarch64RegisterModel(),
                 instruction -> profile.count((int) (instruction.address() - profile.address())));
     }

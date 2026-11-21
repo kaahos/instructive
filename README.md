@@ -428,6 +428,186 @@ The analysis tracks registers only. Condition flags are left out, so a compare f
 by a branch isn't counted as a data dependency, and so are memory dependencies through
 stores and loads. Register usage is modelled for AArch64 so far.
 
+## Finding loops that aren't unrolled
+
+C2 unrolls counted loops: it copies the body several times per iteration, so the loop's
+overhead (the counter, the compare and branch, any range check) is paid once for several
+elements, and the CPU gets several elements' work to overlap. Unrolling is also where
+vectorisation starts. C2's superword pass looks for isomorphic operations in the unrolled
+copies (the same operation on adjacent elements) and packs them into vector
+instructions. A loop that isn't unrolled can't be vectorised.
+
+C2 only unrolls loops it can treat as counted: an `int` counter stepped by a constant up
+to a limit that doesn't change. A method call in the condition that isn't inlined breaks
+that, because C2 can't know what it returns next time. (A `long` counter doesn't, from
+JDK 17 on: C2 splits the loop into an outer loop around an inner one counted by an `int`,
+and unrolls that.)
+
+### Vectorised, and not
+
+The same kernel, `c[i] = a[i] + b[i]`, with two conditions. With `limit` kept out of line
+(`-XX:CompileCommand=dontinline`), as a large method would be:
+
+```java
+static void add(int[] a, int[] b, int[] c) {
+    for (int i = 0; i < a.length; i++) {
+        c[i] = a[i] + b[i];
+    }
+}
+
+static int limit(int[] a) {
+    return a.length;
+}
+
+static void addWithCallInCondition(int[] a, int[] b, int[] c) {
+    for (int i = 0; i < limit(a); i++) {
+        c[i] = a[i] + b[i];
+    }
+}
+```
+
+On 4,096-element arrays, on an Apple M2:
+
+| | JDK 17 (Linux) | JDK 21 (Linux) | JDK 25 (Linux) | JDK 25 (macOS) |
+|---|---|---|---|---|
+| `add` | 0.066 ns/element | 0.067 | 0.066 | 0.063 |
+| `addWithCallInCondition` | 3.70 ns/element | 3.78 | 3.62 | 1.86 |
+
+C2 vectorises `add`. Here is its main loop on JDK 25, from the instruction profile:
+8 copies of a 4-lane vector add, so 32 elements per iteration (`add w11, w18, #0x20`).
+`ldr q` and `str q` move 4 `int`s at a time. The disassembler doesn't print vector
+instructions yet; the `.word 0x4eb18610` is `add v16.4s, v16.4s, v17.4s`.
+
+```
+Vec.add([I[I[I)V
+  tier 4 (C2), compile id 334, 680 bytes at 0x0000ffff73f63a80, 91 samples
+
+  pc                  bytes        instruction                         count        %
+  ...
+  0x0000ffff73f63b60  f2 03 0b 2a  mov w18, w11
+  0x0000ffff73f63b64  4b 7e 7e 93  sbfiz x11, x18, #2, #32                 1    1.10%
+  0x0000ffff73f63b68  cf 01 0b 8b  add x15, x14, x11
+  0x0000ffff73f63b6c  50 00 0b 8b  add x16, x2, x11
+  0x0000ffff73f63b70  f0 05 c0 3d  ldr q16, [x15, #0x10]
+  0x0000ffff73f63b74  11 06 c0 3d  ldr q17, [x16, #0x10]
+  0x0000ffff73f63b78  10 86 b1 4e  .word 0x4eb18610
+  0x0000ffff73f63b7c  6b 00 0b 8b  add x11, x3, x11
+  0x0000ffff73f63b80  70 05 80 3d  str q16, [x11, #0x10]
+  0x0000ffff73f63b84  10 0a c0 3d  ldr q16, [x16, #0x20]
+  0x0000ffff73f63b88  f1 09 c0 3d  ldr q17, [x15, #0x20]
+  0x0000ffff73f63b8c  10 86 b1 4e  .word 0x4eb18610
+  0x0000ffff73f63b90  70 09 80 3d  str q16, [x11, #0x20]
+  0x0000ffff73f63b94  10 0e c0 3d  ldr q16, [x16, #0x30]                   3    3.30%
+  0x0000ffff73f63b98  f1 0d c0 3d  ldr q17, [x15, #0x30]                  10   10.99%
+  0x0000ffff73f63b9c  10 86 b1 4e  .word 0x4eb18610
+  0x0000ffff73f63ba0  70 0d 80 3d  str q16, [x11, #0x30]                   1    1.10%
+  0x0000ffff73f63ba4  10 12 c0 3d  ldr q16, [x16, #0x40]                   1    1.10%
+  0x0000ffff73f63ba8  f1 11 c0 3d  ldr q17, [x15, #0x40]                   1    1.10%
+  0x0000ffff73f63bac  10 86 b1 4e  .word 0x4eb18610
+  0x0000ffff73f63bb0  70 11 80 3d  str q16, [x11, #0x40]
+  0x0000ffff73f63bb4  10 16 c0 3d  ldr q16, [x16, #0x50]
+  0x0000ffff73f63bb8  f1 15 c0 3d  ldr q17, [x15, #0x50]
+  0x0000ffff73f63bbc  10 86 b1 4e  .word 0x4eb18610
+  0x0000ffff73f63bc0  70 15 80 3d  str q16, [x11, #0x50]                   7    7.69%
+  0x0000ffff73f63bc4  10 1a c0 3d  ldr q16, [x16, #0x60]                   5    5.49%
+  0x0000ffff73f63bc8  f1 19 c0 3d  ldr q17, [x15, #0x60]                  10   10.99%
+  0x0000ffff73f63bcc  10 86 b1 4e  .word 0x4eb18610                        1    1.10%
+  0x0000ffff73f63bd0  70 19 80 3d  str q16, [x11, #0x60]
+  0x0000ffff73f63bd4  f0 1d c0 3d  ldr q16, [x15, #0x70]
+  0x0000ffff73f63bd8  11 1e c0 3d  ldr q17, [x16, #0x70]
+  0x0000ffff73f63bdc  10 86 b1 4e  .word 0x4eb18610
+  0x0000ffff73f63be0  70 1d 80 3d  str q16, [x11, #0x70]                   5    5.49%
+  0x0000ffff73f63be4  f0 21 c0 3d  ldr q16, [x15, #0x80]                   2    2.20%
+  0x0000ffff73f63be8  11 22 c0 3d  ldr q17, [x16, #0x80]                  17   18.68%
+  0x0000ffff73f63bec  10 86 b1 4e  .word 0x4eb18610
+  0x0000ffff73f63bf0  70 21 80 3d  str q16, [x11, #0x80]                  24   26.37%
+  0x0000ffff73f63bf4  4b 82 00 11  add w11, w18, #0x20
+  0x0000ffff73f63bf8  7f 01 0c 6b  cmp w11, w12
+  0x0000ffff73f63bfc  2b fb ff 54  b.lt 0xffff73f63b60 <+0xe0>
+  ...
+```
+
+`addWithCallInCondition` does one element per iteration, with each array's range checked
+every time (`cmp`/`b.hs`), the arrays and their lengths spilled to the stack and reloaded
+around the call, and the call itself:
+
+```
+Vec.addWithCallInCondition([I[I[I)V
+  tier 4 (C2), compile id 323, 536 bytes at 0x0000ffff97f63980, 43 samples
+
+  pc                  bytes        instruction                     count        %
+  ...
+  0x0000ffff97f639e0  08 00 00 14  b 0xffff97f63a00 <+0x80>
+  0x0000ffff97f639e4  1f 20 03 d5  nop
+  0x0000ffff97f639e8  1f 20 03 d5  nop
+  0x0000ffff97f639ec  1f 20 03 d5  nop
+  0x0000ffff97f639f0  ee 3f 40 a9  ldp x14, x15, [sp]
+  0x0000ffff97f639f4  f2 0b 40 f9  ldr x18, [sp, #0x10]
+  0x0000ffff97f639f8  f1 43 43 29  ldp w17, w16, [sp, #0x18]
+  0x0000ffff97f639fc  e2 23 40 b9  ldr w2, [sp, #0x20]                18   41.86%
+  0x0000ffff97f63a00  aa 7f 7e 93  sbfiz x10, x29, #2, #32
+  0x0000ffff97f63a04  eb 01 0a 8b  add x11, x15, x10
+  0x0000ffff97f63a08  cc 01 0a 8b  add x12, x14, x10
+  0x0000ffff97f63a0c  bf 03 11 6b  cmp w29, w17
+  0x0000ffff97f63a10  82 03 00 54  b.hs 0xffff97f63a80 <+0x100>
+  0x0000ffff97f63a14  8d 11 40 b9  ldr w13, [x12, #0x10]               5   11.63%
+  0x0000ffff97f63a18  bf 03 10 6b  cmp w29, w16
+  0x0000ffff97f63a1c  22 04 00 54  b.hs 0xffff97f63aa0 <+0x120>
+  0x0000ffff97f63a20  6c 11 40 b9  ldr w12, [x11, #0x10]              12   27.91%
+  0x0000ffff97f63a24  8c 01 0d 0b  add w12, w12, w13
+  0x0000ffff97f63a28  bf 03 02 6b  cmp w29, w2
+  0x0000ffff97f63a2c  c2 04 00 54  b.hs 0xffff97f63ac4 <+0x144>
+  0x0000ffff97f63a30  4a 02 0a 8b  add x10, x18, x10
+  0x0000ffff97f63a34  4c 11 00 b9  str w12, [x10, #0x10]
+  0x0000ffff97f63a38  ee 3f 00 a9  stp x14, x15, [sp]
+  0x0000ffff97f63a3c  f2 0b 00 f9  str x18, [sp, #0x10]
+  0x0000ffff97f63a40  f1 43 03 29  stp w17, w16, [sp, #0x18]
+  0x0000ffff97f63a44  e2 23 00 b9  str w2, [sp, #0x20]                 1    2.33%
+  0x0000ffff97f63a48  bd 07 00 11  add w29, w29, #0x1
+  0x0000ffff97f63a4c  e1 03 0e aa  mov x1, x14
+  0x0000ffff97f63a50  6c fe ff 97  bl 0xffff97f63400
+  0x0000ffff97f63a54  1f 20 03 d5  nop                                 6   13.95%
+  0x0000ffff97f63a58  9f 39 80 f2  movk xzr, #0x1cc
+  0x0000ffff97f63a5c  1f 20 80 f2  movk xzr, #0x100                    1    2.33%
+  0x0000ffff97f63a60  bf 03 00 6b  cmp w29, w0
+  0x0000ffff97f63a64  6b fc ff 54  b.lt 0xffff97f639f0 <+0x70>
+  ...
+```
+
+### The rule
+
+`NotUnrolledLoopRule` reports hot loops that process one element per iteration. For each
+innermost loop with at least 10% of the method's samples, it finds the induction
+variables: recurrences made only of adding or subtracting a constant and moving between
+registers. Here that's `w29`, stepped by `add w29, w29, #0x1` at `+0x0c8`. It then works
+out what a step covers from how the variable is used:
+
+- as an index, scaled or extended in an operand (`add x10, x11, w13, sxtw #2`) or by an
+  instruction of its own (`sbfiz x10, x29, #2, #32` at `+0x080`), a step counts
+  elements;
+- as the base register of a load or store, it counts bytes, so a step of one register's
+  width is one element.
+
+A loop is reported if every induction variable classified that way covers one element.
+In `add`, the vector loop's `w18` is scaled by `sbfiz` too, but steps by 32, so it isn't
+reported. Neither are the scalar loops C2 puts before and after it to reach an aligned
+start and finish the remainder: they step by one, but have few samples.
+
+```java
+List<Instruction> code = new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
+List<NotUnrolledLoop> loops = new NotUnrolledLoopRule().apply(
+        code, new Aarch64RegisterModel(), i -> profile.count((int) (i.address() - profile.address())));
+NotUnrolledLoop loop = loops.get(0);
+loop.header();             // the address of +0x080
+loop.inductionVariable();  // x29
+loop.step();               // 1
+loop.calls();              // the bl at +0x0d0
+loop.samples();            // 43, all of the method's
+```
+
+The finding lists the loop's calls, since a call that isn't inlined is the usual reason,
+and whether the induction variable is 64-bit.
+
 ## Using it
 
 Load the native library, either with the Java agent (`-javaagent:agent.jar`) or by
@@ -506,3 +686,6 @@ published: build it locally.
   differences between these versions. On macOS, JDKs before 25 don't export the
   VMStructs symbols at all.
 - **Interpreted code** is counted, but not attributed to methods.
+- **Analysis rules** (`LongDependencyChainRule`, `NotUnrolledLoopRule`) work on AArch64
+  only so far: they need a register model, and only `Aarch64RegisterModel` exists. They
+  track registers, not memory.
