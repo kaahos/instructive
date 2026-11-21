@@ -14,9 +14,10 @@ permissions:
   contents: read
 
 jobs:
-  # The disassembler is plain Java: one quick job, and a gate for the expensive matrix.
-  parse:
-    name: parse (JDK 25)
+  # The disassembler and analysis are plain Java: one quick job, and a gate for the
+  # expensive matrix.
+  parse-and-analyse:
+    name: parse and analyse (JDK 25)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -25,20 +26,22 @@ jobs:
           distribution: temurin
           java-version: 25
       - uses: gradle/actions/setup-gradle@v6
-      - run: ./gradlew :parse:test
+      - run: ./gradlew :parse:test :analyse:test
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: reports-parse
-          path: parse/build/reports/tests
+          name: reports-parse-and-analyse
+          path: |
+            parse/build/reports/tests
+            analyse/build/reports/tests
 
   # The agent on each libc, JDK and architecture, natively on runners of that
   # architecture, in containers built from docker/linux-build.Dockerfile by the same
   # script used locally.
   agent-test:
     name: agent-test (${{ matrix.distro }}, JDK ${{ matrix.jdk }}, ${{ matrix.arch }})
-    needs: parse
+    needs: parse-and-analyse
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
