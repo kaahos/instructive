@@ -9,8 +9,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import instructive.agent.InstructionProfile;
 import instructive.agent.InstructionProfileFormatter;
 import instructive.agent.Sampler;
+import instructive.parse.Disassembler;
 import instructive.parse.Instruction;
-import instructive.parse.aarch64.Aarch64Disassembler;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -34,7 +34,7 @@ class InstructionProfileFormatterTest {
 
     @Test
     void printsHeaderAndDisassemblesEachSampledPc() {
-        assumeAarch64();
+        Disassembler disassembler = assumeDisassembler();
         InstructionProfile profile = hottestCompiledLoop();
         byte[] code = profile.machineCode().orElseThrow();
         List<String> lines = format(new InstructionProfileFormatter(), profile);
@@ -47,15 +47,14 @@ class InstructionProfileFormatterTest {
         List<Integer> sampled = sampledOffsets(profile);
         List<Row> rows = rows(lines);
         assertEquals(sampled.size(), rows.size(), () -> String.join("\n", lines));
-        Aarch64Disassembler disassembler = new Aarch64Disassembler();
         long sum = 0;
         for (int i = 0; i < rows.size(); i++) {
             Row row = rows.get(i);
             int offset = sampled.get(i);
             // The PC is recovered from the base address and the count's position.
             assertEquals(profile.address() + offset, row.pc());
-            assertEquals(hex(Arrays.copyOfRange(code, offset, offset + 4)), row.bytes(), "bytes at +" + offset);
             Instruction expected = disassembler.decode(code, offset, row.pc());
+            assertEquals(hex(Arrays.copyOfRange(code, offset, offset + expected.length())), row.bytes(), "bytes at +" + offset);
             assertTrue(row.instruction().startsWith(expected.text()), () -> row + " vs " + expected);
             assertEquals(profile.count(offset), row.count());
             assertEquals(100.0 * row.count() / profile.total(), Double.parseDouble(row.percent().replace("%", "")), 0.005);
@@ -66,20 +65,21 @@ class InstructionProfileFormatterTest {
 
     @Test
     void listsEveryInstructionInContext() {
-        assumeAarch64();
+        Disassembler disassembler = assumeDisassembler();
         InstructionProfile profile = hottestCompiledLoop();
         byte[] code = profile.machineCode().orElseThrow();
         List<String> lines = format(new InstructionProfileFormatter().allInstructions(), profile);
         List<Row> rows = rows(lines);
-        // Every 4-byte instruction once, in order, sampled or not.
-        assertEquals(code.length / 4, rows.size(), () -> String.join("\n", lines));
+        // Every instruction once, in order, sampled or not.
+        List<Instruction> instructions = disassembler.decodeAll(code, profile.address());
+        assertEquals(instructions.size(), rows.size(), () -> String.join("\n", lines));
         for (int i = 0; i < rows.size(); i++) {
-            assertEquals(profile.address() + 4L * i, rows.get(i).pc());
+            assertEquals(instructions.get(i).address(), rows.get(i).pc());
         }
         assertEquals(profile.sampled(), rows.stream().mapToLong(Row::count).sum());
         assertTrue(rows.stream().anyMatch(row -> row.count() == 0 && row.percent().isEmpty()), "cold rows are blank");
         // The loop's back-edge points into the method, so it is annotated with an offset.
-        assertTrue(rows.stream().anyMatch(row -> row.instruction().matches("b\\.\\w+ 0x[0-9a-f]+ <\\+0x[0-9a-f]+>")),
+        assertTrue(rows.stream().anyMatch(row -> row.instruction().matches("(b\\.|j)\\w+ 0x[0-9a-f]+ <\\+0x[0-9a-f]+>")),
                 () -> String.join("\n", lines));
     }
 
@@ -98,8 +98,10 @@ class InstructionProfileFormatterTest {
         }
     }
 
-    private static void assumeAarch64() {
-        assumeTrue(InstructionProfileFormatter.forArchitecture(System.getProperty("os.arch")).isPresent());
+    private static Disassembler assumeDisassembler() {
+        var disassembler = InstructionProfileFormatter.forArchitecture(System.getProperty("os.arch"));
+        assumeTrue(disassembler.isPresent(), "no decoder for " + System.getProperty("os.arch"));
+        return disassembler.get();
     }
 
     // Splits rows using the header: "pc", "bytes" and "instruction" start their columns;
