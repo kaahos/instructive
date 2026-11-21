@@ -5,10 +5,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import instructive.agent.InstructionProfile;
+import instructive.agent.InstructionProfileFormatter;
 import instructive.agent.Sampler;
+import instructive.parse.Disassembler;
 import instructive.parse.Instruction;
 import instructive.parse.InstructionKind;
-import instructive.parse.aarch64.Aarch64Disassembler;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -21,11 +22,12 @@ import org.junit.jupiter.api.Test;
 class DisassemblyTest {
     private static final String COMPILED = "instructive.agenttest.CodeCacheTest.compiledLoop(J)J";
 
-    private final Aarch64Disassembler disassembler = new Aarch64Disassembler();
+    private static final Disassembler disassembler =
+            InstructionProfileFormatter.forArchitecture(System.getProperty("os.arch")).orElse(null);
 
     @BeforeAll
-    static void onlyOnAarch64() {
-        assumeTrue(System.getProperty("os.arch").equals("aarch64"), "the decoder is for aarch64");
+    static void needsADecoder() {
+        assumeTrue(disassembler != null, "no decoder for " + System.getProperty("os.arch"));
     }
 
     @AfterEach
@@ -46,7 +48,7 @@ class DisassemblyTest {
             }
             List<Instruction> instructions = disassembler.decodeAll(code, profile.address());
             long decoded = instructions.stream().filter(Instruction::isDecoded).count();
-            // Compiled code is nearly all decodable; the rest is vector SIMD or data.
+            // Compiled code is nearly all decodable; the rest is vector SIMD (on aarch64) or data.
             assertTrue(decoded >= 0.95 * instructions.size(), () -> profile.name() + ": " + decoded + " of " + instructions.size());
             Map<Long, Instruction> byAddress = new TreeMap<>();
             instructions.forEach(instruction -> byAddress.put(instruction.address(), instruction));
@@ -86,7 +88,7 @@ class DisassemblyTest {
         long inLoop = 0;
         for (Instruction edge : backEdges) {
             long body = 0;
-            for (long pc = edge.branchTarget().getAsLong(); pc <= edge.address(); pc += 4) {
+            for (long pc = edge.branchTarget().getAsLong(); pc < edge.address() + edge.length(); pc++) {
                 body += profile.count((int) (pc - start));
             }
             inLoop = Math.max(inLoop, body);
