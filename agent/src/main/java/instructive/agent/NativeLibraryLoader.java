@@ -1,5 +1,6 @@
 package instructive.agent;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -43,7 +44,8 @@ public final class NativeLibraryLoader {
     }
 
     /**
-     * The {@code <os>-<arch>} directory name, e.g. {@code linux-x86_64}. Must agree with
+     * The {@code <os>-<arch>} directory name, e.g. {@code linux-x86_64}, or
+     * {@code linux-musl-aarch64} on musl-based Linux. Must agree with
      * normaliseOperatingSystem and normaliseArchitecture in agent/build.gradle.kts.
      */
     static String platform() {
@@ -53,13 +55,20 @@ public final class NativeLibraryLoader {
     static String operatingSystem() {
         String os = System.getProperty("os.name").toLowerCase(Locale.ROOT);
         if (os.startsWith("linux")) {
-            return "linux";
+            return isMusl() ? "linux-musl" : "linux";
         } else if (os.startsWith("mac")) {
             return "macos";
         } else if (os.startsWith("windows")) {
             return "windows";
         }
         throw new UnsatisfiedLinkError("Unsupported operating system: " + os);
+    }
+
+    // musl-based Linux (e.g. Alpine) needs its own build: a library linked against glibc
+    // can't load there. It is recognised by musl's dynamic loader, as in the build.
+    private static boolean isMusl() {
+        File[] files = new File("/lib").listFiles((directory, name) -> name.startsWith("ld-musl-"));
+        return files != null && files.length > 0;
     }
 
     static String architecture() {

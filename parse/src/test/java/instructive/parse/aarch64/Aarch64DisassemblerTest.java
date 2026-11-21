@@ -77,8 +77,8 @@ class Aarch64DisassemblerTest {
                 instructions.stream().map(Instruction::text).toList());
         assertEquals(List.of(0x1000L, 0x1004L, 0x1008L, 0x100cL, 0x1010L),
                 instructions.stream().map(Instruction::address).toList());
-        assertEquals(2, instructions.getLast().length());
-        assertEquals(InstructionKind.UNKNOWN, instructions.getLast().kind());
+        assertEquals(2, instructions.get(instructions.size() - 1).length());
+        assertEquals(InstructionKind.UNKNOWN, instructions.get(instructions.size() - 1).kind());
     }
 
     @Test

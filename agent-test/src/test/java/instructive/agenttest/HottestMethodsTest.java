@@ -31,7 +31,7 @@ class HottestMethodsTest {
         sample(() -> CodeCacheTest.compiledLoop(500));
         List<InstructionProfile> hottest = hottest(1);
         assertEquals(1, hottest.size());
-        assertEquals(COMPILED, hottest.getFirst().name(), hottest::toString);
+        assertEquals(COMPILED, hottest.get(0).name(), hottest::toString);
     }
 
     @Test
@@ -96,7 +96,7 @@ class HottestMethodsTest {
             assertTrue(profile.isLive() && profile.total() > 0, profile::toString);
         });
         assertFalse(totals.isEmpty());
-        assertTrue(seen.stream().allMatch(profile -> profile == seen.getFirst()), "one reused flyweight");
+        assertTrue(seen.stream().allMatch(profile -> profile == seen.get(0)), "one reused flyweight");
         for (int i = 1; i < totals.size(); i++) {
             assertTrue(totals.get(i - 1) >= totals.get(i), totals::toString);
         }

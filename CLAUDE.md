@@ -13,21 +13,34 @@ The initial target architecture is **x86-64**. Keep architecture-specific code (
 
 ## Build
 
-Gradle (Kotlin DSL) via the wrapper; Java toolchain 25.
+Gradle (Kotlin DSL) via the wrapper. All Java code compiles with `--release 17` (the oldest supported runtime) using whichever JDK runs Gradle, 17 or newer, so don't use APIs newer than Java 17 (e.g. `List.getFirst()`). JNI/JVMTI headers also come from that JDK.
 
 - `./gradlew build` — build everything and run all tests
 - `./gradlew :parse:test` / `./gradlew :agent-test:test` — one module's tests
 - `./gradlew :parse:test --tests 'instructive.parse.ParseTest.loads'` — a single test
+- `scripts/test-linux.sh [all|amd64|arm64] [gradle tasks...]` — run the build, by default `build` (all tests), in Linux containers for x86-64 and/or AArch64, using `docker/linux-build.Dockerfile`.
+  - **Variants:** `DISTRO=ubuntu|alpine` picks glibc (Ubuntu 22.04 with Temurin) or musl (Alpine 3.23 with Alpine's OpenJDK, since Temurin has no Alpine JDK 17 for aarch64), and `JDK=17|21|25` picks the JDK; `OUT=dir` collects the built `.so` and `REPORTS=dir` the test reports. CI runs exactly this script. The checkout is mounted read-only and copied inside (by `scripts/linux-build-in-container.sh`) without its build outputs, so host and Linux builds don't mix; Gradle caches live in per-arch Docker volumes.
+  - **Emulation:** on Apple Silicon, `amd64` runs emulated. It still exercises the x86-64 code paths (PC extraction, `PC_SHIFT` 0), but ThreadSanitizer can't run there. The 4 aarch64-only tests (disassembly and formatter) are skipped on amd64.
+  - **PATH:** Docker Desktop's CLI may not be on PATH; the script adds `~/.docker/bin`.
 - `./gradlew :agent:nativeLibs` — build the host's native library into `agent/build/native-libs/META-INF/native-libs/<os>-<arch>/`
-- `./gradlew :agent:jvmJar -Pinstructive.nativeLibs=dir1,dir2` — build the agent jar, merging in native libraries built elsewhere (each dir contains `META-INF/native-libs/<os>-<arch>/...`)
+- `./gradlew :agent:jvmJar -Pinstructive.nativeLibs=dir1,dir2` (add `-Pinstructive.buildNative=false` to leave out the host's own library) — build the agent jar, merging in native libraries built elsewhere (each dir contains `META-INF/native-libs/<os>-<arch>/...`)
+
+## CI
+
+`.github/workflows/ci.yml`, three stages:
+1. **`parse`:** `:parse:test` on JDK 25. It is quick, and gates the rest.
+2. **`agent-test` matrix:** `:agent-test:test` for {ubuntu, alpine} × JDK {17, 21, 25} × {amd64, arm64}, on native `ubuntu-24.04`/`ubuntu-24.04-arm` runners via `scripts/test-linux.sh`. Each distro/arch's JDK 17 job uploads its `.so` as `native-<distro>-<arch>`.
+3. **`package`:** builds the agent jar with JDK 17 from those artifacts only (`-Pinstructive.buildNative=false`), checks the four `linux[-musl]-{x86_64,aarch64}` libraries are present and no `.dylib` is, and uploads `agent-jar`.
+
+macOS isn't built in CI and `.dylib`s aren't published; macOS users build locally.
 
 ## Modules
 
-- **agent** — the agent. C++ in `src/main/cpp` (Gradle `cpp-library`, shared linkage, JNI/JVMTI headers taken from the toolchain JDK) and Java in `src/main/java`. Because `cpp-library` and the `java` plugin both create an `implementation` configuration and can't coexist, the Java code is built by a source set named `jvm` on `java-base`, packaged by the `jvmJar` task and exposed to other projects through the `agentJar` configuration.
+- **agent** — the agent. C++ in `src/main/cpp` (Gradle `cpp-library`, shared linkage, JNI/JVMTI headers taken from the JDK running Gradle) and Java in `src/main/java`. Because `cpp-library` and the `java` plugin both create an `implementation` configuration and can't coexist, the Java code is built by a source set named `jvm` on `java-base`, packaged by the `jvmJar` task and exposed to other projects through the `agentJar` configuration.
   - The native library is **not** a classic `-agentpath` JVMTI agent: never add `Agent_OnLoad`/`Agent_OnAttach`. `NativeLibraryLoader` extracts `META-INF/native-libs/<os>-<arch>/<System.mapLibraryName("instructive")>` from the jar and `System.load`s it. It is called either by a Java program directly or by the Java agent `InstructiveAgent` (set as `Premain-Class`/`Agent-Class`).
   - The native sampler (`instructive::Sampler`, `src/main/headers` + `src/main/cpp`) is created in `JNI_OnLoad`, which obtains the `jvmtiEnv`, and destroyed in `JNI_OnUnload`. Sampling is controlled explicitly through the Java API `instructive.agent.Sampler` (`start()`, `stop()`, `isRunning()`, `kindCounts()`, `forEachMethod()`, `forEachHottestMethod(k, consumer)`, `resetCounts()`). Its private `*0` natives map to `Sampler::start/stop/running`, which are idempotent and return whether the state changed. The JVM only calls `JNI_OnUnload` when the class loader that loaded the library is garbage collected, and the library is currently loaded by the system class loader, so it is never unloaded. Loading it through an isolated class loader so it can be unloaded is planned for later.
   - CPU time sampling is in `CpuTimer` (`cpu_timer.h`/`cpu_timer.cpp`), kept separate from `Sampler`. Per-OS code sits in the same file behind `#if defined(__linux__)`/`__APPLE__`. Both deliver `SIGPROF` every 10ms of CPU time (hardcoded), and `Sampler::start/stop` start and stop the timer.
-    - **Linux:** one timer per thread. Each is a `timer_create` on that thread's CPU clock (built from the tid like glibc's `MAKE_THREAD_CPUCLOCK`) with `SIGEV_THREAD_ID`, so the signal interrupts the thread that used the CPU. `start()` covers threads listed in `/proc/self/task`; threads started later get a timer from JVMTI `ThreadStart` (`CpuTimer::thread_started`, which runs on the new thread) and lose it in `ThreadEnd`. Native threads started after `start()` aren't sampled until the next `start()`. The tid → timer map is guarded by a mutex that the signal handler never touches. This path has not yet been compiled or run: the development machine is macOS, so it needs a Linux CI job.
+    - **Linux:** one timer per thread. Each is a `timer_create` on that thread's CPU clock (built from the tid like glibc's `MAKE_THREAD_CPUCLOCK`) with `SIGEV_THREAD_ID`, so the signal interrupts the thread that used the CPU. `start()` covers threads listed in `/proc/self/task`; threads started later get a timer from JVMTI `ThreadStart` (`CpuTimer::thread_started`, which runs on the new thread) and lose it in `ThreadEnd`. Native threads started after `start()` aren't sampled until the next `start()`. The tid → timer map is guarded by a mutex that the signal handler never touches. It is tested in Docker (see Build).
     - **macOS:** no per-thread interval timers exist, so it keeps one process-wide `setitimer(ITIMER_PROF)`, and the thread hooks do nothing.
   - **The `SIGPROF` handler (`signo, siginfo_t*, ucontext`) does not chain to previously registered handlers.** Other sources of SIGPROF may exist, and their signals aren't ours to interpret.
     - **Linux:** every timer labels its signals with `sigev_value.sival_ptr = &own_signal_tag`. The handler ignores any SIGPROF unless `si_code == SI_TIMER` and `si_value` carries that tag.
@@ -66,8 +79,11 @@ Gradle (Kotlin DSL) via the wrapper; Java toolchain 25.
     2. Inside the `AbstractInterpreter::_code` StubQueue: `INTERPRETED`.
     3. Otherwise, find the blob with each CodeHeap's segment map, as HotSpot's `CodeHeap::find_start` does, and validate it against the `HeapBlock` used flag and `CodeBlob._size`.
     4. A blob is an nmethod (`COMPILED`) if `CodeBlob._kind == CodeBlobKind::Nmethod` (JDK 23+) or, on earlier JDKs, if its `_name` is `"nmethod"`. Any other blob is `STUB`.
+  - **Native linking and exports:**
+    - **Linux:** the library links the C++ runtime statically (`-static-libstdc++ -static-libgcc`), so it only needs libc and the dynamic loader. `-Wl,--exclude-libs,ALL` keeps the runtime's symbols out of the dynamic symbol table, and `agent/src/main/linker/exports.map` (`--version-script`) exports only `Java_*`/`JNI_*`. The version script is needed because libstdc++ gives `std` templates instantiated in our code default visibility.
+    - **All platforms:** code is compiled with `-fvisibility=hidden -fvisibility-inlines-hidden`, so only `JNIEXPORT` functions are exported. A new native entry point must be `JNIEXPORT` and named `Java_*` or `JNI_*`.
   - On macOS the build adds the SDK's libc++ headers (`xcrun --show-sdk-path`) because Gradle looks for them in a Command Line Tools directory that recent versions no longer have.
-  - `<os>` is one of `linux`, `macos`, `windows`, and `<arch>` is `x86_64` or `aarch64` (e.g. `linux-x86_64`). The OS is part of the path so `.so` and `.dylib` builds for the same architecture stay apart, and native initialisation dispatches on the current OS. The mapping exists twice and must stay in sync: `normaliseOperatingSystem`/`normaliseArchitecture` in `agent/build.gradle.kts` and `NativeLibraryLoader.platform()`.
+  - **Platform directory names:** `<os>` is one of `linux` (glibc), `linux-musl` (musl, detected by `/lib/ld-musl-*` at build time and at load time), `macos` or `windows`, and `<arch>` is `x86_64` or `aarch64` (e.g. `linux-musl-aarch64`). The OS is part of the path so `.so` and `.dylib` builds for the same architecture stay apart, a glibc build is never loaded on musl, and native initialisation dispatches on the current OS. The mapping exists twice and must stay in sync: `normaliseOperatingSystem`/`normaliseArchitecture` in `agent/build.gradle.kts` and `NativeLibraryLoader.platform()`.
   - Multi-architecture builds: a matrix job per OS/architecture builds and tests, then publishes `agent/build/native-libs`. A final job merges them with `-Pinstructive.nativeLibs`. Where the same file comes from more than one source, the locally built library wins.
 - **parse** — plain Java analysis code, tested with JUnit 6.
   - **Disassembler API:** `Disassembler` (decode one instruction at an offset, or a whole method) returns `Instruction` records: address, length, mnemonic, operands, `InstructionKind` (branch/call/return variants, ALU, load, store, atomic, FP, SIMD, system...) and any direct branch target. The interface is shaped so an x86 backend, likely a library such as Capstone or XED, can sit behind it.
