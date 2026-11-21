@@ -1072,7 +1072,7 @@ Sampler.forEachHottestMethod(10, profile -> {
     // Keep a snapshot if you need it afterwards.
     InstructionProfile snapshot = profile.snapshot();
     // name(), compLevel(), compileId(), address(), total(), count(offset), counts(),
-    // machineCode() ...
+    // machineCode(), classSignatureCode(), methodNameCode(), methodSignatureCode() ...
 });
 
 Sampler.forEachMethod(profile -> { /* every loaded compiled method */ });
@@ -1090,9 +1090,15 @@ a single instruction, so continuous profiling should reset regularly.
   handler takes the program counter from the signal context.
 - **Tracking compiled code:** JVMTI `CompiledMethodLoad`/`CompiledMethodUnload` events
   keep a concurrent radix tree, keyed by code address, of every loaded compiled
-  method. Its leaf records hold the name, compile tier and id, a total sample count
-  and a dense array of per-PC counters. The handler looks the PC up there, without
-  locks or allocation. Freed records are reclaimed safely using epochs.
+  method. Its leaf records hold the compile tier and id, a total sample count and a
+  dense array of per-PC counters, so a record's size depends only on the code it
+  covers. The handler looks the PC up there, without locks or allocation. Freed records
+  are reclaimed safely using epochs.
+- **Names, once each:** a record doesn't hold its method's name. Each distinct class
+  signature, method name and method signature is kept once, in a concurrent dictionary
+  that numbers strings in the order it first sees them, and records hold the three
+  codes. `name()` looks them up and formats `package.Class.name(signature)` only when
+  asked, which is usually just for the hottest methods.
 - **Zero-copy reads:** the records live in one native memory region that Java reads
   in place, through the `InstructionProfile` flyweight. Selecting the top k is a
   single pass with a bounded heap.

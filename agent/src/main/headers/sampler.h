@@ -6,11 +6,13 @@
 #include <jvmti.h>
 #include <memory>
 #include <mutex>
+#include <string>
 
 #include "code_cache.h"
 #include "compiled_method_map.h"
 #include "cpu_timer.h"
 #include "profile_arena.h"
+#include "string_dictionary.h"
 #include "vm_structs.h"
 
 namespace instructive {
@@ -66,6 +68,17 @@ public:
     // Zeroes the per-kind counts and every tracked method's total and per-PC counts.
     void reset_counts();
 
+    // The method with these dictionary codes (a CompiledMethod's class_code, name_code
+    // and signature_code) as "package.Class.name(signature)" in modified UTF-8, or empty
+    // if any code is unknown. Not async-signal-safe.
+    std::string method_name(uint32_t class_code, uint32_t name_code, uint32_t signature_code) const;
+
+    // The dictionaries holding every compiled method's class signature, name and
+    // signature, each string once.
+    const StringDictionary& class_signatures() const { return class_signatures_; }
+    const StringDictionary& method_names() const { return method_names_; }
+    const StringDictionary& method_signatures() const { return method_signatures_; }
+
 private:
     static void on_tick(siginfo_t* info, void* ucontext);
     static void JNICALL on_compiled_method_load(jvmtiEnv* jvmti, jmethodID method, jint code_size,
@@ -76,6 +89,8 @@ private:
     static void JNICALL on_thread_end(jvmtiEnv* jvmti, JNIEnv* env, jthread thread);
 
     bool enable_method_tracking();
+    void describe(jvmtiEnv* jvmti, jmethodID method, uint32_t* class_code, uint32_t* name_code,
+                  uint32_t* signature_code);
 
     JavaVM* vm_;
     jvmtiEnv* jvmti_;
@@ -83,6 +98,11 @@ private:
     CodeCache code_cache_;
     // Declared before the map, which returns records to it.
     ProfileArena arena_;
+    // Records refer to these by code; strings are never removed, so codes in records
+    // copied to Java stay valid for as long as the library is loaded.
+    StringDictionary class_signatures_;
+    StringDictionary method_names_;
+    StringDictionary method_signatures_;
     std::unique_ptr<CompiledMethodMap> compiled_methods_;
     bool method_tracking_ = false;
     std::atomic<uint64_t> kind_counts_[CODE_KIND_COUNT] = {};

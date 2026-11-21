@@ -22,6 +22,8 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    // The agent's native unit tests run wherever its integration tests do, CI included.
+    dependsOn(":agent:nativeTest")
     inputs.files(agentJar)
     jvmArgumentProviders.add(CommandLineArgumentProvider {
         listOf(

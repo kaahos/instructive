@@ -41,11 +41,20 @@ import java.util.Optional;
  * {@link #MAX_COUNT}, after which they are a lower bound while {@link #total()} keeps
  * counting.
  *
+ * <p><b>Names.</b> A profile doesn't hold its method's name: the sampler keeps each
+ * distinct class signature, method name and method signature once, in dictionaries, and
+ * a profile holds their codes. {@link #name()} looks the strings up and formats them,
+ * with a native call, so it is best kept to the methods whose names are wanted, such as
+ * the hottest. The codes themselves are cheap to read and compare: two profiles have
+ * the same code exactly when they have the same string, so they can be used to group
+ * methods without resolving any names. Codes stay valid for as long as the native
+ * library is loaded, after the method is unloaded and in snapshots too.
+ *
  * <p>Record layout, for maintainers. A profile reads one record of the native
  * {@code instructive::CompiledMethod} struct, which this must match exactly. Records
  * are in native byte order and 8-byte aligned:
  * <pre>
- *   0 int   lengths        profileLength | nameLength << 16, one atomic word
+ *   0 int   profileLength  the number of counts, one atomic word
  *   4 int   generation     odd while the record is being (re)initialised
  *   8 long  address        start of the method's instructions
  *  16 long  total          samples anywhere in the method's nmethod
@@ -56,14 +65,18 @@ import java.util.Optional;
  *  44 char  methodSize     bytes of instructions, saturated at 65535
  *  46 byte  compLevel      -1 if unknown
  *  47 byte  pcShift        log2 of the bytes each count covers: 2 on AArch64, 0 elsewhere
- *  48 char  counts[profileLength], then the name and a NUL, then padding
+ *  48 int   classCode      dictionary code of the declaring class's signature, -1 if unknown
+ *  52 int   nameCode       dictionary code of the method's name, -1 if unknown
+ *  56 int   signatureCode  dictionary code of the method's signature, -1 if unknown
+ *  60 int   (unused)
+ *  64 char  counts[profileLength], then padding
  * </pre>
- * The lengths word holds the number of counts, each covering {@code 1 << pcShift} bytes
- * of code: on AArch64 every instruction is 4 bytes and 4-byte aligned, so one count per
- * instruction slot suffices. There is no stored record length: it is
- * {@link #blockLength(int)} of the lengths word, which must match the native
- * {@code CompiledMethod::block_size}. Both lengths are 16 bits, so an nmethod is
- * profiled for at most its first 65535 counts. When a method is
+ * Each count covers {@code 1 << pcShift} bytes of code: on AArch64 every instruction is
+ * 4 bytes and 4-byte aligned, so one count per instruction slot suffices. There is no
+ * stored record length: it is {@link #blockLength(int)} of profileLength, which must
+ * match the native {@code CompiledMethod::block_size}, so a record's size depends only
+ * on the code it covers. profileLength is at most 65535, so an nmethod is profiled for
+ * at most its first 65535 counts. When a method is
  * unloaded its record becomes RETIRED, then FREE, and the block is later reused for
  * another method of the same size class, rewriting it under an odd generation.
  */
@@ -72,7 +85,7 @@ public final class InstructionProfile {
     /** The largest per-instruction count; counts stop there until {@link Sampler#resetCounts()}. */
     public static final char MAX_COUNT = Character.MAX_VALUE;
 
-    static final int LENGTHS = 0;
+    static final int PROFILE_LENGTH = 0;
     static final int GENERATION = 4;
     static final int ADDRESS = 8;
     static final int TOTAL = 16;
@@ -81,7 +94,10 @@ public final class InstructionProfile {
     static final int METHOD_SIZE = 44;
     static final int COMP_LEVEL = 46;
     static final int PC_SHIFT = 47;
-    static final int HEADER_SIZE = 48;
+    static final int CLASS_CODE = 48;
+    static final int NAME_CODE = 52;
+    static final int SIGNATURE_CODE = 56;
+    static final int HEADER_SIZE = 64;
     static final int ALIGNMENT = 8;
     static final int MIN_BLOCK_SIZE = 128;
 
@@ -117,32 +133,34 @@ public final class InstructionProfile {
 
     /** The record's size in bytes: the distance to the next record. */
     int blockLength() {
-        return blockLength(lengths());
+        return blockLength(counters());
     }
 
     /**
-     * The size of the block holding a record with this lengths word: header, counts,
-     * name and NUL, padded to 8 bytes, then rounded up to a size class (four per power
-     * of two). Must match the native {@code CompiledMethod::block_size}.
+     * The size of the block holding a record with this many counts: header and counts,
+     * padded to 8 bytes, then rounded up to a size class (eight per power of two). Must
+     * match the native {@code CompiledMethod::block_size}.
      */
-    static int blockLength(int lengths) {
-        int bytes = recordLength(lengths);
+    static int blockLength(int profileLength) {
+        int bytes = recordLength(profileLength);
         if (bytes <= MIN_BLOCK_SIZE) {
             return MIN_BLOCK_SIZE;
         }
-        int step = Integer.highestOneBit(bytes) >>> 2;
+        int step = Integer.highestOneBit(bytes) >>> 3;
         return (bytes + step - 1) & -step;
     }
 
-    // Header, counts, name and NUL, padded: the part of the block in use.
-    private static int recordLength(int lengths) {
-        int bytes = HEADER_SIZE + (lengths & 0xFFFF) * Character.BYTES + (lengths >>> 16) + 1;
+    // Header and counts, padded: the part of the block in use.
+    private static int recordLength(int profileLength) {
+        int bytes = HEADER_SIZE + profileLength * Character.BYTES;
         return (bytes + ALIGNMENT - 1) & -ALIGNMENT;
     }
 
-    // Both lengths in one read, so they always come from the same record.
-    private int lengths() {
-        return buffer.hasArray() ? buffer.getInt(position + LENGTHS) : (int) INT.getAcquire(buffer, position + LENGTHS);
+    // The number of counts, as stored.
+    private int counters() {
+        return buffer.hasArray()
+                ? buffer.getInt(position + PROFILE_LENGTH)
+                : (int) INT.getAcquire(buffer, position + PROFILE_LENGTH);
     }
 
     /** The record's generation, read with acquire semantics; odd while it is being written. */
@@ -186,7 +204,7 @@ public final class InstructionProfile {
             return this;
         }
         int generation = wrappedGeneration;
-        int length = recordLength(lengths());
+        int length = recordLength(counters());
         if (generation() != generation) {
             throw reused();
         }
@@ -247,11 +265,6 @@ public final class InstructionProfile {
 
     private int pcShift() {
         return buffer.get(position + PC_SHIFT);
-    }
-
-    // The number of counts, as stored.
-    private int counters() {
-        return lengths() & 0xFFFF;
     }
 
     /**
@@ -320,46 +333,42 @@ public final class InstructionProfile {
         return sum;
     }
 
-    /** The number of bytes of the method's name, in modified UTF-8. */
-    public int nameLength() {
-        return lengths() >>> 16;
+    /**
+     * The method as {@code package.Class.name(signature)}, for example
+     * {@code java.lang.String.hashCode()I}; empty if the JVM couldn't describe it. Looks
+     * the parts up in the sampler's dictionaries with a native call, and allocates the
+     * result, on each call.
+     */
+    public String name() {
+        return name0(classSignatureCode(), methodNameCode(), methodSignatureCode());
     }
 
-    /** The method as {@code package.Class.name(signature)}. */
-    public String name() {
-        return appendName(new StringBuilder(nameLength())).toString();
+    // The JNI side of name(): formats the strings with these codes.
+    private static native String name0(int classSignatureCode, int methodNameCode, int methodSignatureCode);
+
+    /**
+     * The dictionary code of the declaring class's signature ({@code Ljava/lang/String;}):
+     * the same for every method of the class, and different for every other class. -1 if
+     * unknown.
+     */
+    public int classSignatureCode() {
+        return buffer.getInt(position + CLASS_CODE);
     }
 
     /**
-     * Appends the method's name to {@code to}, without allocating beyond what
-     * {@code to} needs to grow.
-     *
-     * <p>The name is stored as the JVM reports it, in modified UTF-8: like UTF-8, but NUL
-     * is two bytes and supplementary characters are surrogate pairs of three-byte
-     * sequences, so every character decodes from one, two or three bytes. A malformed
-     * sequence, which can only come from reading a record while it is being reused,
-     * decodes as U+FFFD.
+     * The dictionary code of the method's name ({@code hashCode}): the same for every
+     * method of that name, overloads and other classes' included. -1 if unknown.
      */
-    public StringBuilder appendName(StringBuilder to) {
-        int start = position + HEADER_SIZE + counters() * Character.BYTES;
-        int end = start + nameLength();
-        for (int i = start; i < end; ) {
-            int b = buffer.get(i) & 0xFF;
-            if (b < 0x80) {
-                to.append((char) b);
-                i += 1;
-            } else if ((b & 0xE0) == 0xC0 && i + 1 < end) {
-                to.append((char) (((b & 0x1F) << 6) | (buffer.get(i + 1) & 0x3F)));
-                i += 2;
-            } else if ((b & 0xF0) == 0xE0 && i + 2 < end) {
-                to.append((char) (((b & 0x0F) << 12) | ((buffer.get(i + 1) & 0x3F) << 6) | (buffer.get(i + 2) & 0x3F)));
-                i += 3;
-            } else {
-                to.append('\uFFFD');
-                i += 1;
-            }
-        }
-        return to;
+    public int methodNameCode() {
+        return buffer.getInt(position + NAME_CODE);
+    }
+
+    /**
+     * The dictionary code of the method's signature ({@code ()I}): the same for every
+     * method with that signature. -1 if unknown.
+     */
+    public int methodSignatureCode() {
+        return buffer.getInt(position + SIGNATURE_CODE);
     }
 
     @Override

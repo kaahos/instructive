@@ -15,8 +15,8 @@ namespace instructive {
 //
 // The arena is a single region reserved up front; pages are only committed as they
 // are touched. Blocks are carved from it by bumping `used`, so [0, used) is always a
-// sequence of blocks that Java can walk, deriving each block's length from its lengths
-// word (CompiledMethod::block_size). Blocks are sized by size class and a freed block
+// sequence of blocks that Java can walk, deriving each block's length from its
+// profile_length (CompiledMethod::block_size). Blocks are sized by size class and a freed block
 // goes on its class's free list, only to be reused for a record of the same class, so
 // the derived length never changes and churn doesn't grow the arena.
 //
@@ -40,11 +40,10 @@ public:
     // The extent of the carved blocks; Java walks [0, used()).
     size_t used() const { return used_.load(std::memory_order_acquire); }
 
-    // A block for a record with these variable parts (each at most
-    // CompiledMethod::MAX_LENGTH), with its lengths set, counts and name zeroed, state
-    // FREE and an odd generation: the caller fills in the rest and then calls
-    // publish(). Returns null when the arena is full.
-    CompiledMethod* allocate(size_t profile_length, size_t name_length);
+    // A block for a record with this many counters (at most CompiledMethod::MAX_LENGTH),
+    // with its length set, counts zeroed, state FREE and an odd generation: the caller
+    // fills in the rest and then calls publish(). Returns null when the arena is full.
+    CompiledMethod* allocate(size_t profile_length);
 
     // Marks a filled-in block as stable (even generation).
     static void publish(CompiledMethod* method);

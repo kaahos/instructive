@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <string>
 #include <vector>
 
 #include "sampler.h"
@@ -128,6 +129,17 @@ JNIEXPORT jbyteArray JNICALL Java_instructive_agent_InstructionProfile_machineCo
         env->SetByteArrayRegion(result, 0, static_cast<jsize>(code.size()), code.data());
     }
     return result;
+}
+
+// The name of the method with these dictionary codes, for
+// instructive.agent.InstructionProfile.name(): "package.Class.name(signature)", or empty
+// if a code is unknown. The dictionaries hold JVMTI's modified UTF-8, which is what
+// NewStringUTF takes.
+JNIEXPORT jstring JNICALL Java_instructive_agent_InstructionProfile_name0(JNIEnv* env, jclass cls, jint class_code,
+                                                                         jint name_code, jint signature_code) {
+    std::string name = sampler->method_name(static_cast<uint32_t>(class_code), static_cast<uint32_t>(name_code),
+                                            static_cast<uint32_t>(signature_code));
+    return env->NewStringUTF(name.c_str());
 }
 
 JNIEXPORT void JNICALL Java_instructive_agent_Sampler_resetCounts0(JNIEnv* env, jclass cls) {

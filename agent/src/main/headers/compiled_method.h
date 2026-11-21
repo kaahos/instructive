@@ -13,7 +13,7 @@ namespace instructive {
 // fixed-width fields and the static_asserts below. Native-only fields are part of the
 // layout too, so Java knows to skip them.
 //
-//    0 u32 lengths         profile_length | name_length << 16, written as one word
+//    0 u32 profile_length  counters in pc_counts (at most MAX_LENGTH)
 //    4 u32 generation      odd while the block is being (re)initialised
 //    8 u64 code_begin      start of the instructions JVMTI reported
 //   16 u64 count           samples anywhere in the mapped range
@@ -26,13 +26,18 @@ namespace instructive {
 //   44 u16 code_size       bytes of instructions, saturated at UINT16_MAX
 //   46 i8  comp_level      -1 if unknown
 //   47 u8  pc_shift        log2 of the bytes each counter covers (PC_SHIFT)
-//   48 u16 pc_counts[profile_length], then name[name_length] and a NUL, then padding
-//      to 8 bytes
+//   48 u32 class_code      the declaring class's JVMTI signature ("Ljava/lang/String;"),
+//   52 u32 name_code       the method's name and
+//   56 u32 signature_code  its signature ("(I)V"), each as a StringDictionary code, or
+//                          StringDictionary::NO_CODE if JVMTI couldn't describe it
+//   60 u32 (unused)
+//   64 u16 pc_counts[profile_length], then padding to 8 bytes
 //
-// There is no block length: it is block_size(profile_length, name_length), which
-// readers compute. That holds because a freed block is only reused for a record of the
-// same size class, and stays safe for a reader racing a reuse because both lengths
-// live in one word written atomically, so they are never seen from different records.
+// Names are held once each in the Sampler's dictionaries, not in the record, so a
+// record's size depends only on the code it covers. There is no block length: it is
+// block_size(profile_length), which readers compute. That holds because a freed block
+// is only reused for a record of the same size class, so a reader racing a reuse
+// derives the same length from the old or the new profile_length.
 //
 // pc_counts covers [code_begin, code_begin + (profile_length << PC_SHIFT)): the
 // instructions and the stubs after them, with one counter per possible instruction
@@ -53,7 +58,7 @@ struct CompiledMethod {
     static constexpr uint32_t RETIRED = 2;
     static constexpr uint16_t MAX_PC_COUNT = UINT16_MAX;
     static constexpr size_t MAX_LENGTH = UINT16_MAX;
-    static constexpr size_t HEADER_SIZE = 48;
+    static constexpr size_t HEADER_SIZE = 64;
     static constexpr size_t ALIGNMENT = 8;
     static constexpr size_t MIN_BLOCK_SIZE = 128;
 #if defined(__aarch64__)
@@ -62,7 +67,7 @@ struct CompiledMethod {
     static constexpr int PC_SHIFT = 0;
 #endif
 
-    std::atomic<uint32_t> lengths;
+    std::atomic<uint32_t> profile_length_;  // atomic: readers derive the block size from it
     std::atomic<uint32_t> generation;
     uint64_t code_begin;
     std::atomic<uint64_t> count;
@@ -73,28 +78,27 @@ struct CompiledMethod {
     uint16_t code_size;
     int8_t comp_level;
     uint8_t pc_shift;
+    uint32_t class_code;
+    uint32_t name_code;
+    uint32_t signature_code;
+    uint32_t unused;
 
-    // The size of the block holding a record with these variable parts: header, counts,
-    // name and NUL, padded to ALIGNMENT, then rounded up to a size class (four per power
-    // of two, so at most 25% over). Must match InstructionProfile.blockLength.
-    static size_t block_size(size_t profile_length, size_t name_length) {
-        size_t bytes = HEADER_SIZE + profile_length * sizeof(uint16_t) + name_length + 1;
+    // The size of the block holding a record with this many counters: header and
+    // counts, padded to ALIGNMENT, then rounded up to a size class (eight per power of
+    // two, so at most 12.5% over). Must match InstructionProfile.blockLength.
+    static size_t block_size(size_t profile_length) {
+        size_t bytes = HEADER_SIZE + profile_length * sizeof(uint16_t);
         bytes = (bytes + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
         if (bytes <= MIN_BLOCK_SIZE) {
             return MIN_BLOCK_SIZE;
         }
         int log2 = 63 - __builtin_clzll(static_cast<unsigned long long>(bytes));
-        size_t step = size_t{1} << (log2 - 2);
+        size_t step = size_t{1} << (log2 - 3);
         return (bytes + step - 1) & ~(step - 1);
     }
 
-    static uint32_t pack_lengths(size_t profile_length, size_t name_length) {
-        return static_cast<uint32_t>(profile_length) | static_cast<uint32_t>(name_length) << 16;
-    }
-
-    uint32_t profile_length() const { return lengths.load(std::memory_order_relaxed) & 0xFFFF; }
-    uint32_t name_length() const { return lengths.load(std::memory_order_relaxed) >> 16; }
-    size_t block_length() const { return block_size(profile_length(), name_length()); }
+    uint32_t profile_length() const { return profile_length_.load(std::memory_order_relaxed); }
+    size_t block_length() const { return block_size(profile_length()); }
 
     uint64_t code_end() const { return code_begin + code_size; }
     uint64_t range_begin() const { return code_begin - header_offset; }
@@ -118,9 +122,6 @@ struct CompiledMethod {
     const std::atomic<uint16_t>* pc_counts() const {
         return reinterpret_cast<const std::atomic<uint16_t>*>(reinterpret_cast<const char*>(this) + HEADER_SIZE);
     }
-
-    char* name() { return reinterpret_cast<char*>(pc_counts() + profile_length()); }
-    const char* name() const { return reinterpret_cast<const char*>(pc_counts() + profile_length()); }
 
     // Async-signal-safe.
     void record_sample(uintptr_t pc) {
@@ -148,7 +149,7 @@ struct CompiledMethod {
 };
 
 static_assert(sizeof(jmethodID) == 8, "the layout assumes 64-bit pointers");
-static_assert(offsetof(CompiledMethod, lengths) == 0, "layout");
+static_assert(offsetof(CompiledMethod, profile_length_) == 0, "layout");
 static_assert(offsetof(CompiledMethod, generation) == 4, "layout");
 static_assert(offsetof(CompiledMethod, code_begin) == 8, "layout");
 static_assert(offsetof(CompiledMethod, count) == 16, "layout");
@@ -159,6 +160,9 @@ static_assert(offsetof(CompiledMethod, state) == 40, "layout");
 static_assert(offsetof(CompiledMethod, code_size) == 44, "layout");
 static_assert(offsetof(CompiledMethod, comp_level) == 46, "layout");
 static_assert(offsetof(CompiledMethod, pc_shift) == 47, "layout");
+static_assert(offsetof(CompiledMethod, class_code) == 48, "layout");
+static_assert(offsetof(CompiledMethod, name_code) == 52, "layout");
+static_assert(offsetof(CompiledMethod, signature_code) == 56, "layout");
 static_assert(sizeof(CompiledMethod) == CompiledMethod::HEADER_SIZE, "header size");
 static_assert(sizeof(std::atomic<uint16_t>) == 2 &&
                   sizeof(std::atomic<uint32_t>) == 4 && sizeof(std::atomic<uint64_t>) == 8,

@@ -16,44 +16,11 @@ std::atomic<Sampler*> instance{nullptr};
 // CodeEntryAlignment, itself at least 16), used when the real one can't be read.
 constexpr int FALLBACK_LOG2_GRANULE = 4;
 
-// "Lpackage/Class;" -> "package.Class"
-std::string class_name(const char* signature) {
-    std::string name(signature);
-    if (name.size() >= 2 && name.front() == 'L' && name.back() == ';') {
-        name = name.substr(1, name.size() - 2);
-    }
-    for (char& c : name) {
-        if (c == '/') {
-            c = '.';
-        }
-    }
-    return name;
-}
-
-// "package.Class.name(signature)", or empty if JVMTI can't describe the method.
-std::string method_name(JavaVM* vm, jvmtiEnv* jvmti, jmethodID method) {
-    char* name = nullptr;
-    char* signature = nullptr;
-    if (jvmti->GetMethodName(method, &name, &signature, nullptr) != JVMTI_ERROR_NONE) {
-        return {};
-    }
-    std::string result;
-    jclass holder = nullptr;
-    char* class_signature = nullptr;
-    if (jvmti->GetMethodDeclaringClass(method, &holder) == JVMTI_ERROR_NONE &&
-        jvmti->GetClassSignature(holder, &class_signature, nullptr) == JVMTI_ERROR_NONE) {
-        result = class_name(class_signature) + "." + name + signature;
-        jvmti->Deallocate(reinterpret_cast<unsigned char*>(class_signature));
-    }
-    // Events replayed by GenerateEvents run in the caller's JNI frame, where local
-    // references would otherwise pile up.
-    JNIEnv* env = nullptr;
-    if (holder != nullptr && vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_8) == JNI_OK) {
-        env->DeleteLocalRef(holder);
-    }
-    jvmti->Deallocate(reinterpret_cast<unsigned char*>(name));
-    jvmti->Deallocate(reinterpret_cast<unsigned char*>(signature));
-    return result;
+// Interns the JVMTI-allocated string `bytes`, then frees it.
+uint32_t intern(StringDictionary& dictionary, jvmtiEnv* jvmti, char* bytes) {
+    uint32_t code = dictionary.intern(bytes, std::strlen(bytes));
+    jvmti->Deallocate(reinterpret_cast<unsigned char*>(bytes));
+    return code;
 }
 
 }  // namespace
@@ -125,13 +92,11 @@ void JNICALL Sampler::on_compiled_method_load(jvmtiEnv* jvmti, jmethodID method,
     uintptr_t code_begin = reinterpret_cast<uintptr_t>(code_addr);
     uintptr_t code_end = code_begin + static_cast<uintptr_t>(code_size);
     uintptr_t range_begin = code_begin;
-    uintptr_t range_end = code_end;
     int32_t comp_level = -1;
     int32_t compile_id = -1;
     // The nmethod is live while its load event is posted, so this is the one point
     // where reading it through the code heap is reliable. It supplies what JVMTI
-    // doesn't report: the compile level and id, and the full blob extent, so PCs in
-    // the nmethod's stubs and data are attributed to it too.
+    // doesn't report: the compile level and id, and where the nmethod starts.
     CodeLocation location = sampler->code_cache_.lookup(code_begin);
     if (location.kind == CodeKind::Compiled) {
         comp_level = location.comp_level;
@@ -139,23 +104,19 @@ void JNICALL Sampler::on_compiled_method_load(jvmtiEnv* jvmti, jmethodID method,
         uintptr_t blob = reinterpret_cast<uintptr_t>(location.blob);
         if (blob <= code_begin && code_end <= blob + static_cast<uintptr_t>(location.size)) {
             range_begin = blob;
-            range_end = blob + static_cast<uintptr_t>(location.size);
         }
     }
-    std::string name = method_name(sampler->vm_, jvmti, method);
-    // Lengths are 16 bits. Names that long don't occur in practice; nmethods needing more
-    // counters can, and are mapped and profiled for as much as the counters cover.
-    if (name.size() > CompiledMethod::MAX_LENGTH) {
-        size_t cut = CompiledMethod::MAX_LENGTH;
-        // Don't split a (modified) UTF-8 sequence: back up over continuation bytes.
-        while (cut > 0 && (static_cast<uint8_t>(name[cut]) & 0xC0) == 0x80) {
-            --cut;
-        }
-        name.resize(cut);
-    }
+    uint32_t class_code = StringDictionary::NO_CODE;
+    uint32_t name_code = StringDictionary::NO_CODE;
+    uint32_t signature_code = StringDictionary::NO_CODE;
+    sampler->describe(jvmti, method, &class_code, &name_code, &signature_code);
+    // Counters, and the mapped range, end with the code: JVMTI's code_size covers the
+    // instructions and the stubs after them, which is everywhere a PC can be. The rest
+    // of the blob, which on JDKs before 23 includes the nmethod's metadata (debug info,
+    // relocations, oops), would only be counters that never count.
     size_t profile_length =
-        std::min<size_t>(CompiledMethod::counters_for(range_end - code_begin), CompiledMethod::MAX_LENGTH);
-    CompiledMethod* compiled = sampler->arena_.allocate(profile_length, name.size());
+        std::min<size_t>(CompiledMethod::counters_for(code_end - code_begin), CompiledMethod::MAX_LENGTH);
+    CompiledMethod* compiled = sampler->arena_.allocate(profile_length);
     if (compiled == nullptr) {
         // The arena is full: the method's samples will count as Stub.
         return;
@@ -166,9 +127,57 @@ void JNICALL Sampler::on_compiled_method_load(jvmtiEnv* jvmti, jmethodID method,
     compiled->method = method;
     compiled->comp_level = static_cast<int8_t>(comp_level);
     compiled->compile_id = compile_id;
-    std::memcpy(compiled->name(), name.data(), name.size());
+    compiled->class_code = class_code;
+    compiled->name_code = name_code;
+    compiled->signature_code = signature_code;
     ProfileArena::publish(compiled);
     sampler->compiled_methods_->insert(compiled);
+}
+
+// Interns the method's class signature, name and signature. Leaves a code NO_CODE if
+// JVMTI can't supply its string.
+void Sampler::describe(jvmtiEnv* jvmti, jmethodID method, uint32_t* class_code, uint32_t* name_code,
+                       uint32_t* signature_code) {
+    char* name = nullptr;
+    char* signature = nullptr;
+    if (jvmti->GetMethodName(method, &name, &signature, nullptr) == JVMTI_ERROR_NONE) {
+        *name_code = intern(method_names_, jvmti, name);
+        *signature_code = intern(method_signatures_, jvmti, signature);
+    }
+    jclass holder = nullptr;
+    char* class_signature = nullptr;
+    if (jvmti->GetMethodDeclaringClass(method, &holder) == JVMTI_ERROR_NONE &&
+        jvmti->GetClassSignature(holder, &class_signature, nullptr) == JVMTI_ERROR_NONE) {
+        *class_code = intern(class_signatures_, jvmti, class_signature);
+    }
+    // Events replayed by GenerateEvents run in the caller's JNI frame, where local
+    // references would otherwise pile up.
+    JNIEnv* env = nullptr;
+    if (holder != nullptr && vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_8) == JNI_OK) {
+        env->DeleteLocalRef(holder);
+    }
+}
+
+std::string Sampler::method_name(uint32_t class_code, uint32_t name_code, uint32_t signature_code) const {
+    size_t class_length, name_length, signature_length;
+    const char* class_signature = class_signatures_.lookup(class_code, &class_length);
+    const char* name = method_names_.lookup(name_code, &name_length);
+    const char* signature = method_signatures_.lookup(signature_code, &signature_length);
+    if (class_signature == nullptr || name == nullptr || signature == nullptr) {
+        return {};
+    }
+    // "Lpackage/Class;" -> "package.Class"
+    std::string result;
+    if (class_length >= 2 && class_signature[0] == 'L' && class_signature[class_length - 1] == ';') {
+        result.assign(class_signature + 1, class_length - 2);
+    } else {
+        result.assign(class_signature, class_length);
+    }
+    std::replace(result.begin(), result.end(), '/', '.');
+    result.push_back('.');
+    result.append(name, name_length);
+    result.append(signature, signature_length);
+    return result;
 }
 
 void JNICALL Sampler::on_compiled_method_unload(jvmtiEnv* jvmti, jmethodID method, const void* code_addr) {

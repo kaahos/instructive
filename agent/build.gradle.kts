@@ -134,6 +134,45 @@ tasks.named("assemble") {
     dependsOn(jvmJar)
 }
 
+// Native unit tests: each src/test/cpp/<name>_test.cpp is compiled with the source it
+// tests, src/main/cpp/<name>.cpp, into an executable with the host's C++ compiler, and
+// run; a non-zero exit fails the build. -Pinstructive.sanitize=thread (or
+// address,undefined) builds them with a sanitizer, where the toolchain supports it.
+val sanitize: String? = providers.gradleProperty("instructive.sanitize").orNull
+val nativeTest = tasks.register("nativeTest") {
+    group = "verification"
+    description = "Builds and runs the native unit tests."
+}
+fileTree("src/test/cpp") { include("*_test.cpp") }.files.sorted().forEach { test ->
+    val name = test.name.removeSuffix("_test.cpp")
+    val taskName = name.split('_').joinToString("") { it.replaceFirstChar(Char::uppercase) }
+    val source = file("src/main/cpp/$name.cpp")
+    val executable = layout.buildDirectory.file("native-test/${name}_test")
+    val compile = tasks.register<Exec>("compile${taskName}Test") {
+        inputs.files(test, source, fileTree("src/main/headers"))
+        inputs.property("sanitize", sanitize ?: "")
+        outputs.file(executable)
+        doFirst { executable.get().asFile.parentFile.mkdirs() }
+        val os = org.gradle.nativeplatform.platform.internal.DefaultNativePlatform.getCurrentOperatingSystem()
+        val arguments = mutableListOf("c++", "-std=c++17", "-Wall", "-Wextra", "-pthread", "-Isrc/main/headers")
+        if (os.isMacOsX) {
+            arguments.addAll(listOf("-isystem", macosSdkPath.get() + "/usr/include/c++/v1"))
+        }
+        arguments.addAll(if (sanitize != null) listOf("-O1", "-g", "-fsanitize=$sanitize") else listOf("-O2"))
+        arguments.addAll(listOf(test.path, source.path, "-o", executable.get().asFile.path))
+        commandLine(arguments)
+    }
+    val run = tasks.register<Exec>("run${taskName}Test") {
+        dependsOn(compile)
+        inputs.file(executable)
+        commandLine(executable.get().asFile.path)
+    }
+    nativeTest.configure { dependsOn(run) }
+}
+tasks.named("check") {
+    dependsOn(nativeTest)
+}
+
 // Consumable output for other projects (e.g. agent-test).
 val agentJar = configurations.create("agentJar") {
     isCanBeConsumed = true
