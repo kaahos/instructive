@@ -1,0 +1,81 @@
+# Unroll.sumCall([I)I: for (int i = 0; i < limit(data); i++) sum += data[i], limit not inlined
+# C2 on JDK 25, Linux aarch64, one second of samples. Columns: bytes, samples, offset and disassembly.
+1f 20 03 d5	0	+0x000  nop
+e9 53 40 d1	0	+0x004  sub x9, sp, #0x14, lsl #12
+3f 01 00 f9	0	+0x008  str xzr, [x9]
+ff 03 01 d1	0	+0x00c  sub sp, sp, #0x40
+fd 7b 03 a9	0	+0x010  stp x29, x30, [sp, #0x30]
+48 09 00 18	0	+0x014  ldr w8, 0xffff8bf6357c
+89 23 40 b9	0	+0x018  ldr w9, [x28, #0x20]
+1f 01 09 eb	0	+0x01c  cmp x8, x9
+41 08 00 54	0	+0x020  b.ne 0xffff8bf63568 <+0x128>
+fd 03 01 aa	0	+0x024  mov x29, x1
+c6 fe ff 97	0	+0x028  bl 0xffff8bf62f80
+1f 20 03 d5	0	+0x02c  nop
+9f 24 80 f2	0	+0x030  movk xzr, #0x124
+1f 00 80 f2	0	+0x034  movk xzr, #0x0
+1f 00 00 71	0	+0x038  cmp w0, #0x0
+4d 05 00 54	0	+0x03c  b.le 0xffff8bf63524 <+0xe4>
+eb 03 1d aa	0	+0x040  mov x11, x29
+6c 0d 40 b9	0	+0x044  ldr w12, [x11, #0xc]
+ed 03 1f 2a	0	+0x048  mov w13, wzr
+ee 03 1f 2a	0	+0x04c  mov w14, wzr
+06 00 00 14	0	+0x050  b 0xffff8bf634a8 <+0x68>
+1f 20 03 d5	0	+0x054  nop
+1f 20 03 d5	0	+0x058  nop
+1f 20 03 d5	0	+0x05c  nop
+eb 03 40 f9	0	+0x060  ldr x11, [sp]
+ec 3b 41 29	21	+0x064  ldp w12, w14, [sp, #0x8]
+6a c9 2d 8b	0	+0x068  add x10, x11, w13, sxtw #2
+bf 01 0c 6b	1	+0x06c  cmp w13, w12
+a2 02 00 54	0	+0x070  b.hs 0xffff8bf63504 <+0xc4>
+eb 03 00 f9	0	+0x074  str x11, [sp]
+4b 11 40 b9	0	+0x078  ldr w11, [x10, #0x10]
+cb 01 0b 0b	0	+0x07c  add w11, w14, w11
+ec 2f 01 29	0	+0x080  stp w12, w11, [sp, #0x8]
+bd 05 00 11	0	+0x084  add w29, w13, #0x1
+e1 03 40 f9	0	+0x088  ldr x1, [sp]
+ad fe ff 97	0	+0x08c  bl 0xffff8bf62f80
+1f 20 03 d5	4	+0x090  nop
+1f 31 80 f2	0	+0x094  movk xzr, #0x188
+1f 20 80 f2	1	+0x098  movk xzr, #0x100
+ed 03 1d 2a	0	+0x09c  mov w13, w29
+bf 03 00 6b	0	+0x0a0  cmp w29, w0
+eb fd ff 54	0	+0x0a4  b.lt 0xffff8bf634a0 <+0x60>
+e0 0f 40 b9	0	+0x0a8  ldr w0, [sp, #0xc]
+fd 7b 43 a9	0	+0x0ac  ldp x29, x30, [sp, #0x30]
+ff 03 01 91	0	+0x0b0  add sp, sp, #0x40
+88 17 40 f9	0	+0x0b4  ldr x8, [x28, #0x28]
+ff 63 28 eb	0	+0x0b8  cmp sp, x8
+08 03 00 54	0	+0x0bc  b.hi 0xffff8bf6355c <+0x11c>
+c0 03 5f d6	0	+0x0c0  ret
+61 03 80 12	0	+0x0c4  mov w1, #-0x1c
+ee 07 00 b9	0	+0x0c8  str w14, [sp, #0x4]
+eb 07 00 f9	0	+0x0cc  str x11, [sp, #0x8]
+ed 13 00 b9	0	+0x0d0  str w13, [sp, #0x10]
+db be ed 97	0	+0x0d4  bl 0xffff8bad3080
+1f 20 03 d5	0	+0x0d8  nop
+1f 3a 80 f2	0	+0x0dc  movk xzr, #0x1d0
+1f 40 80 f2	0	+0x0e0  movk xzr, #0x200
+e0 03 1f 2a	0	+0x0e4  mov w0, wzr
+f1 ff ff 17	0	+0x0e8  b 0xffff8bf634ec <+0xac>
+e1 03 00 aa	0	+0x0ec  mov x1, x0
+02 00 00 14	0	+0x0f0  b 0xffff8bf63538 <+0xf8>
+e1 03 00 aa	0	+0x0f4  mov x1, x0
+fd 7b 43 a9	0	+0x0f8  ldp x29, x30, [sp, #0x30]
+ff 03 01 91	0	+0x0fc  add sp, sp, #0x40
+c0 c6 ed 17	0	+0x100  b 0xffff8bad5040
+e0 03 00 b9	0	+0x104  str w0, [sp]
+21 12 80 12	0	+0x108  mov w1, #-0x92
+cd be ed 97	0	+0x10c  bl 0xffff8bad3080
+1f 20 03 d5	0	+0x110  nop
+1f 41 80 f2	0	+0x114  movk xzr, #0x208
+1f 60 80 f2	0	+0x118  movk xzr, #0x300
+c8 fc ff 10	0	+0x11c  adr x8, 0xffff8bf634f4
+88 a3 02 f9	0	+0x120  str x8, [x28, #0x540]
+c7 65 ea 17	0	+0x124  b 0xffff8b9fcc80
+08 30 88 d2	0	+0x128  mov x8, #0x4180
+08 74 b1 f2	0	+0x12c  movk x8, #0x8ba0, lsl #16
+e8 ff df f2	0	+0x130  movk x8, #0xffff, lsl #32
+00 01 3f d6	0	+0x134  blr x8
+bb ff ff 17	0	+0x138  b 0xffff8bf63464 <+0x24>

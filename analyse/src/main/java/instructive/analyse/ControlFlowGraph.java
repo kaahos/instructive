@@ -276,7 +276,9 @@ public final class ControlFlowGraph {
                     continue;
                 }
                 // The natural loop: the header and every block that reaches this
-                // back-edge's source without passing through the header.
+                // back-edge's source without passing through the header. Only blocks
+                // the header dominates: not, say, unreachable padding that falls into
+                // a loop entered by a branch to its middle.
                 BitSet body = bodies.computeIfAbsent(header, h -> new BitSet());
                 body.set(header);
                 Deque<Integer> work = new ArrayDeque<>();
@@ -286,7 +288,7 @@ public final class ControlFlowGraph {
                 }
                 while (!work.isEmpty()) {
                     for (int predecessor : blocks.get(work.pop()).predecessors()) {
-                        if (!body.get(predecessor)) {
+                        if (!body.get(predecessor) && dominates(dominator, header, predecessor)) {
                             body.set(predecessor);
                             work.push(predecessor);
                         }

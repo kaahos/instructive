@@ -10,6 +10,7 @@ import instructive.agent.InstructionProfile;
 import instructive.agent.InstructionProfileFormatter;
 import instructive.agent.Sampler;
 import instructive.analyse.DependencyChain;
+import instructive.analyse.DependencyGraph;
 import instructive.analyse.LongDependencyChainRule;
 import instructive.parse.Instruction;
 import instructive.parse.aarch64.Aarch64Disassembler;
@@ -116,6 +117,52 @@ class DependencyChainTest {
         assertTrue(chain.samples() > 0, report);
     }
 
+    /**
+     * Delta encoding, the inverse: each output is the difference of two inputs, so no
+     * output waits for another. The previous input is carried from one iteration to the
+     * next, but it comes straight from a load, so nothing forms a cycle.
+     */
+    @Test
+    void findsNoChainInDeltaEncoding() {
+        InstructionProfile hottest = profile("encodeDeltas", DependencyChainTest::encodeDeltas);
+        List<Instruction> instructions =
+                new Aarch64Disassembler().decodeAll(hottest.machineCode().orElseThrow(), hottest.address());
+        Aarch64RegisterModel registers = new Aarch64RegisterModel();
+        List<DependencyChain> chains = new LongDependencyChainRule().apply(instructions, registers,
+                instruction -> hottest.count((int) (instruction.address() - hottest.address())));
+        String report = describe(hottest, chains);
+        assertTrue(chains.isEmpty(), report);
+
+        // The previous value is carried: a sub reads a register a load wrote on the
+        // previous iteration.
+        DependencyGraph graph = DependencyGraph.of(instructions, registers);
+        boolean carriesALoad = false;
+        for (int i = 0; i < graph.size(); i++) {
+            if (graph.instruction(i).mnemonic().equals("sub")) {
+                for (int writer : graph.loopCarriedDependencies(i)) {
+                    carriesALoad |= graph.instruction(writer).mnemonic().startsWith("ld");
+                }
+            }
+        }
+        assertTrue(carriesALoad, report);
+        // But it's not a recurrence: the only cycles are loop counters, one add of a
+        // constant each, which even the lowest threshold finds alone.
+        for (DependencyGraph.Recurrence recurrence : graph.recurrences()) {
+            assertEquals(1, recurrence.length(), report);
+            assertTrue(graph.instruction(recurrence.cycle().get(0)).text().matches("add (w|x)\\d+, (w|x)\\d+, #0x\\w+"), report);
+        }
+        assertTrue(new LongDependencyChainRule(Integer.MAX_VALUE, 2).apply(instructions, registers).isEmpty(), report);
+    }
+
+    static void encodeDeltas(int[] data) {
+        int previous = data[0];
+        for (int i = 1; i < data.length; i++) {
+            int value = data[i];
+            data[i] = value - previous;
+            previous = value;
+        }
+    }
+
     static void decodeDeltas(int[] data) {
         int previous = data[0];
         for (int i = 1; i < data.length; i++) {
@@ -125,6 +172,12 @@ class DependencyChainTest {
     }
 
     private static InstructionProfile profileDeltaDecoding() {
+        return profile("decodeDeltas", DependencyChainTest::decodeDeltas);
+    }
+
+    // Profiles `kernel` for a second, each time on a fresh copy of the same deltas, and
+    // returns the profile of the method named `name`.
+    private static InstructionProfile profile(String name, java.util.function.Consumer<int[]> kernel) {
         int[] deltas = new int[1 << 16];
         for (int i = 0; i < deltas.length; i++) {
             deltas[i] = (i * 0x9E3779B9) >>> 25;
@@ -132,7 +185,7 @@ class DependencyChainTest {
         int[] data = new int[deltas.length];
         for (int i = 0; i < 2000; i++) {
             System.arraycopy(deltas, 0, data, 0, data.length);
-            decodeDeltas(data); // compile it
+            kernel.accept(data); // compile it
         }
         Sampler.resetCounts();
         assertTrue(Sampler.start());
@@ -140,18 +193,18 @@ class DependencyChainTest {
             long deadline = System.nanoTime() + 1_000_000_000L;
             while (System.nanoTime() < deadline) {
                 System.arraycopy(deltas, 0, data, 0, data.length);
-                decodeDeltas(data);
+                kernel.accept(data);
             }
         } finally {
             Sampler.stop();
         }
         InstructionProfile[] hottest = new InstructionProfile[1];
         Sampler.forEachHottestMethod(Integer.MAX_VALUE, profile -> {
-            if (hottest[0] == null && profile.name().contains("decodeDeltas")) {
+            if (hottest[0] == null && profile.name().contains(name)) {
                 hottest[0] = profile.snapshot();
             }
         });
-        assertNotNull(hottest[0], "no samples of decodeDeltas");
+        assertNotNull(hottest[0], "no samples of " + name);
         return hottest[0];
     }
 

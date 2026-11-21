@@ -34,6 +34,12 @@ tasks.test {
             "-XX:+UnlockDiagnosticVMOptions",
             "-XX:-UseVectorizedHashCodeIntrinsic",
             "-XX:CompileCommand=exclude,instructive.agenttest.CodeCacheTest::interpretedLoop",
+            // DependencyChainTest profiles these as methods of their own.
+            "-XX:CompileCommand=dontinline,instructive.agenttest.DependencyChainTest::encodeDeltas",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.DependencyChainTest::decodeDeltas",
+            // NotUnrolledLoopTest: limit() stays a call in the loop's condition, and each
+            // loop is profiled as a method of its own.
+            "-XX:CompileCommand=dontinline,instructive.agenttest.NotUnrolledLoopTest::*",
         )
     })
 }

@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 class LongDependencyChainRuleTest {
     // C2's 8x unrolled loop for ArraysSupport.hashCode(int[]), h = 31 * h + a[i], on
     // AArch64, as bytes in memory order. Each element is lsl #5, sub, add on h.
-    private static final String[] HASH_LOOP = {
+    static final String[] HASH_LOOP = {
         "41 c9 22 8b", // add x1, x10, w2, sxtw #2
         "8b 68 1b 53", // lsl w11, w4, #5
         "2c 10 40 b9", // ldr w12, [x1, #0x10]
@@ -217,7 +217,7 @@ class LongDependencyChainRuleTest {
 
     // C2's 8x unrolled loop for delta decoding, previous += data[i]; data[i] = previous;
     // the running value is carried in w14.
-    private static final String[] DELTA_LOOP = {
+    static final String[] DELTA_LOOP = {
         "4b c9 30 8b", // add x11, x10, w16, sxtw #2
         "6d 11 40 b9", // ldr w13, [x11, #0x10]
         "cc 01 0d 0b", // add w12, w14, w13
