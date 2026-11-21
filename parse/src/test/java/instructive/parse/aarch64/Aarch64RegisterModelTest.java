@@ -91,6 +91,20 @@ class Aarch64RegisterModelTest {
     }
 
     @Test
+    void storesDistinguishTheirDataFromTheirAddress() {
+        assertStored(0xb9002d6e, "str w14, [x11, #0x2c]", Set.of("x14"));
+        assertStored(0xa9010fe2, "stp x2, x3, [sp, #0x10]", Set.of("x2", "x3"));
+        assertStored(0xa9bf7bfd, "stp x29, x30, [sp, #-0x10]!", Set.of("x29", "x30"));
+        assertStored(0x889ffd28, "stlr w8, [x9]", Set.of("x8"));
+        assertStored(0xc8027c20, "stxr w2, x0, [x1]", Set.of("x0"));
+        assertStored(0xb820005f, "stadd w0, [x2]", Set.of("x0"));
+        assertStored(0x88e8fd4d, "casal w8, w13, [x10]", Set.of("x13"));
+        assertStored(0xf8e08041, "swpal x0, x1, [x2]", Set.of("x0"));
+        assertStored(0xf8408c20, "ldr x0, [x1, #0x8]!", Set.of());
+        assertStored(0x0b0c01cc, "add w12, w14, w12", Set.of());
+    }
+
+    @Test
     void atomicsReadAndWriteTheRightOperands() {
         assertUsage(0x88e8fd4d, "casal w8, w13, [x10]", Set.of("x8", "x13", "x10"), Set.of("x8"));
         assertUsage(0xf8e00062, "ldaddal x0, x2, [x3]", Set.of("x0", "x3"), Set.of("x2"));
@@ -151,6 +165,14 @@ class Aarch64RegisterModelTest {
         assertTrue(usage.known(), text);
         assertEquals(reads, usage.reads(), text + " reads");
         assertEquals(writes, usage.writes(), text + " writes");
+    }
+
+    private void assertStored(int word, String text, Set<String> stored) {
+        Instruction instruction = disassembler.decode(word, 0);
+        assertEquals(text, instruction.text());
+        RegisterUsage usage = registers.usage(instruction);
+        assertEquals(stored, usage.stored(), text + " stores");
+        assertTrue(usage.reads().containsAll(stored), text);
     }
 
     private static Set<String> union(Set<String> a, Set<String> b) {

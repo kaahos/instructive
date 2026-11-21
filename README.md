@@ -147,7 +147,7 @@ loop is slow is a long *dependency chain*: each instruction needs the result of 
 before it. A modern core can run several instructions per cycle, but not instructions
 that wait on each other, so a loop dominated by one chain runs at the chain's latency
 rather than at the core's throughput. The `analyse` module finds such chains
-automatically, from the instruction stream alone.
+automatically, from the instruction stream and its control flow.
 
 ### The hash loop
 
@@ -161,79 +161,272 @@ computes `31 * h` as `(h << 5) - h`. The first two of the eight elements look li
 lsl w11, w4, #5         // h << 5            (h is in w4)
 ldr w12, [x1, #0x10]    // a[i]
 sub w11, w11, w4        // (h << 5) - h      needs the lsl
-add w12, w11, w12       // + a[i]            needs the sub: h for the next element
+add w12, w11, w12       // + a[i]            needs the sub and the ldr: h for the next element
 lsl w14, w12, #5        //                   needs the add
 ldr w11, [x1, #0x14]    // a[i + 1]
 sub w12, w14, w12       //                   needs the lsl
-add w12, w12, w11       //                   needs the sub
+add w12, w12, w11       //                   needs the sub and the ldr
 ...                     // six more elements
 add w4, w12, w11        // h for the next iteration
 ```
 
-The loads don't depend on `h` and can run ahead. The `lsl`, `sub` and `add` of each
-element can't: each waits for the one before.
+### The instruction profile
 
-### Turning the stream into chains
-
-`DependencyGraph` walks the method's instructions in address order and keeps track of
-the last instruction to write each register. For every instruction it links each
-register it reads to that register's most recent writer: the closest predecessor that
-produced its input. Applied recursively, the links form chains back through the code.
-An instruction's chain length is one more than the longest chain among the instructions
-it depends on.
-
-Two things make this work:
-- **Register usage.** `Aarch64RegisterModel` derives which registers each decoded
-  instruction reads and writes, and treats `w4` and `x4` as the same register.
-- **Undecoded instructions.** An instruction the decoder can't read might write any
-  register, so it breaks every chain through it.
-
-In the hash loop each `add` links back to its `sub`, each `sub` to its `lsl`, and each
-`lsl` to the previous element's `add`. That gives a chain three instructions longer for
-every element, 24 across the unrolled body.
-
-### Flagging the chain
-
-`LongDependencyChainRule` reports every chain of at least 16 instructions that no later
-instruction extends. Here is its top finding for the compiled
-`ArraysSupport.hashCode([IIII)I`, abridged, with offsets from the start of the method:
+One second of `Arrays.hashCode` on a 65,536-element array, printed by
+`InstructionProfileFormatter().allInstructions()` and abridged to the unrolled loop, from
+its first instruction to the back-edge `b.lt`, then the safepoint poll:
 
 ```
-hottest chain: 32 instructions, 0 samples on it, 71 in the code it spans
-  +0x028  mov x10, x1
-  +0x078  add x11, x10, w2, sxtw #2
-  +0x07c  ldr w12, [x11, #0x10]
-  +0x08c  add w4, w13, w12
-  +0x0c4  lsl w11, w4, #5        <- the unrolled loop body starts here
-  +0x0cc  sub w11, w11, w4
-  +0x0d0  add w12, w11, w12
-  ...                             24 instructions: lsl, sub, add for each of 8 elements
-  +0x144  add w4, w12, w11       <- and ends here, carrying h round the loop
-  +0x170  lsl w11, w4, #5
-  +0x174  sub w13, w11, w4
-  +0x17c  add w4, w13, w12
-  +0x188  mov w0, w4
+jdk.internal.util.ArraysSupport.hashCode([IIII)I
+  tier 4 (C2), compile id 366, 544 bytes at 0x0000000116b1a300, 72 samples
+
+  pc                  bytes        instruction                   count        %
+  ...
+  0x0000000116b1a3c0  41 c9 22 8b  add x1, x10, w2, sxtw #2          4    5.56%
+  0x0000000116b1a3c4  8b 68 1b 53  lsl w11, w4, #5
+  0x0000000116b1a3c8  2c 10 40 b9  ldr w12, [x1, #0x10]
+  0x0000000116b1a3cc  6b 01 04 4b  sub w11, w11, w4
+  0x0000000116b1a3d0  6c 01 0c 0b  add w12, w11, w12
+  0x0000000116b1a3d4  8e 69 1b 53  lsl w14, w12, #5
+  0x0000000116b1a3d8  2b 14 40 b9  ldr w11, [x1, #0x14]
+  0x0000000116b1a3dc  cc 01 0c 4b  sub w12, w14, w12
+  0x0000000116b1a3e0  8c 01 0b 0b  add w12, w12, w11                 1    1.39%
+  0x0000000116b1a3e4  8e 69 1b 53  lsl w14, w12, #5
+  0x0000000116b1a3e8  2b 18 40 b9  ldr w11, [x1, #0x18]
+  0x0000000116b1a3ec  cc 01 0c 4b  sub w12, w14, w12
+  0x0000000116b1a3f0  8c 01 0b 0b  add w12, w12, w11
+  0x0000000116b1a3f4  8b 69 1b 53  lsl w11, w12, #5
+  0x0000000116b1a3f8  2e 1c 40 b9  ldr w14, [x1, #0x1c]              1    1.39%
+  0x0000000116b1a3fc  6c 01 0c 4b  sub w12, w11, w12
+  0x0000000116b1a400  8b 01 0e 0b  add w11, w12, w14
+  0x0000000116b1a404  6f 69 1b 53  lsl w15, w11, #5
+  0x0000000116b1a408  2c 20 40 b9  ldr w12, [x1, #0x20]              2    2.78%
+  0x0000000116b1a40c  eb 01 0b 4b  sub w11, w15, w11
+  0x0000000116b1a410  6c 01 0c 0b  add w12, w11, w12
+  0x0000000116b1a414  8f 69 1b 53  lsl w15, w12, #5
+  0x0000000116b1a418  2b 24 40 b9  ldr w11, [x1, #0x24]              1    1.39%
+  0x0000000116b1a41c  ec 01 0c 4b  sub w12, w15, w12
+  0x0000000116b1a420  8c 01 0b 0b  add w12, w12, w11
+  0x0000000116b1a424  8f 69 1b 53  lsl w15, w12, #5
+  0x0000000116b1a428  2b 28 40 b9  ldr w11, [x1, #0x28]              4    5.56%
+  0x0000000116b1a42c  ec 01 0c 4b  sub w12, w15, w12
+  0x0000000116b1a430  8c 01 0b 0b  add w12, w12, w11
+  0x0000000116b1a434  8f 69 1b 53  lsl w15, w12, #5
+  0x0000000116b1a438  2b 2c 40 b9  ldr w11, [x1, #0x2c]             59   81.94%
+  0x0000000116b1a43c  ec 01 0c 4b  sub w12, w15, w12
+  0x0000000116b1a440  42 20 00 11  add w2, w2, #0x8
+  0x0000000116b1a444  84 01 0b 0b  add w4, w12, w11
+  0x0000000116b1a448  5f 00 00 6b  cmp w2, w0
+  0x0000000116b1a44c  ab fb ff 54  b.lt 0x116b1a3c0 <+0xc0>
+  0x0000000116b1a450  8b 1b 40 f9  ldr x11, [x28, #0x30]
+  0x0000000116b1a454  7f 01 40 b9  ldr wzr, [x11]
+  ...
 ```
 
-The chain's core is the 24-instruction loop body. Because links follow the code's
-layout rather than its control flow, the chain also takes in the peeled iteration
-before the loop and the tail after it.
+The samples are on the loop's loads, and most of all on the eighth element's,
+`ldr w11, [x1, #0x2c]` at `+0x138`, with 59 of the 72. Each load's value goes straight
+into the `add` that computes the next `h`: the load is part of the chain, and sampling
+attributes the chain's cost to it.
 
-None of the method's 71 samples landed on the chain's own instructions. 84% of them
-landed on one of the loads instead. That's *skid*: a sample lands on an instruction
-waiting near the stall, not on the instructions causing it. So the rule ranks chains by
-`spanSamples`, the samples on every instruction between a chain's first and last. This
-chain spans all 71, which puts it first.
+### Finding the chain
+
+`DependencyGraph` first builds the method's control flow (`ControlFlowGraph`): basic
+blocks, the branches between them, and loops. Here that includes the unrolled loop, which
+starts at `+0x0c0` and branches back to it from `+0x14c`. For every register an
+instruction reads, it then finds the instructions whose writes can reach it along that
+control flow. A write that reaches only round the back-edge is carried from one iteration
+to the next. Here `+0x144` writes `w4`, the `h` the next iteration starts from, and
+`+0x0c4` and `+0x0cc` read it.
+
+`LongDependencyChainRule` takes the instruction that produces the carried value,
+`add w4, w12, w11` at `+0x144`, and walks backwards from it. For each instruction it
+follows every operand to the instruction that wrote it within the iteration: from
+`+0x144` through `w11` to the load at `+0x138` and through `w12` to the `sub` at
+`+0x13c`, and so on back to the start of the loop. Each time the walk reaches a sampled
+instruction, it adds that instruction's samples to the chain's total. Instructions on the
+longest run that each need the one before, the critical path, are marked `*`:
+
+```
+  offset  instruction                   count  total  operands written by
+* +0x144  add w4, w12, w11                        0  w11 from +0x138, w12 from +0x13c
+* +0x13c  sub w12, w15, w12                       0  w12 from +0x130, w15 from +0x134
+  +0x138  ldr w11, [x1, #0x2c]            59     59  x1 from +0x0c0
+* +0x134  lsl w15, w12, #5                       59  w12 from +0x130
+* +0x130  add w12, w12, w11                      59  w11 from +0x128, w12 from +0x12c
+* +0x12c  sub w12, w15, w12                      59  w12 from +0x120, w15 from +0x124
+  +0x128  ldr w11, [x1, #0x28]             4     63  x1 from +0x0c0
+* +0x124  lsl w15, w12, #5                       63  w12 from +0x120
+* +0x120  add w12, w12, w11                      63  w11 from +0x118, w12 from +0x11c
+* +0x11c  sub w12, w15, w12                      63  w12 from +0x110, w15 from +0x114
+  +0x118  ldr w11, [x1, #0x24]             1     64  x1 from +0x0c0
+* +0x114  lsl w15, w12, #5                       64  w12 from +0x110
+* +0x110  add w12, w11, w12                      64  w11 from +0x10c, w12 from +0x108
+* +0x10c  sub w11, w15, w11                      64  w11 from +0x100, w15 from +0x104
+  +0x108  ldr w12, [x1, #0x20]             2     66  x1 from +0x0c0
+* +0x104  lsl w15, w11, #5                       66  w11 from +0x100
+* +0x100  add w11, w12, w14                      66  w12 from +0x0fc, w14 from +0x0f8
+* +0x0fc  sub w12, w11, w12                      66  w11 from +0x0f4, w12 from +0x0f0
+  +0x0f8  ldr w14, [x1, #0x1c]             1     67  x1 from +0x0c0
+* +0x0f4  lsl w11, w12, #5                       67  w12 from +0x0f0
+* +0x0f0  add w12, w12, w11                      67  w11 from +0x0e8, w12 from +0x0ec
+* +0x0ec  sub w12, w14, w12                      67  w12 from +0x0e0, w14 from +0x0e4
+  +0x0e8  ldr w11, [x1, #0x18]                   67  x1 from +0x0c0
+* +0x0e4  lsl w14, w12, #5                       67  w12 from +0x0e0
+* +0x0e0  add w12, w12, w11                1     68  w11 from +0x0d8, w12 from +0x0dc
+* +0x0dc  sub w12, w14, w12                      68  w12 from +0x0d0, w14 from +0x0d4
+  +0x0d8  ldr w11, [x1, #0x14]                   68  x1 from +0x0c0
+* +0x0d4  lsl w14, w12, #5                       68  w12 from +0x0d0
+* +0x0d0  add w12, w11, w12                      68  w11 from +0x0cc, w12 from +0x0c8
+* +0x0cc  sub w11, w11, w4                       68  w11 from +0x0c4, w4 from +0x144 on the previous iteration
+  +0x0c8  ldr w12, [x1, #0x10]                   68  x1 from +0x0c0
+* +0x0c4  lsl w11, w4, #5                        68  w4 from +0x144 on the previous iteration
+  +0x0c0  add x1, x10, w2, sxtw #2         4     72
+
+```
+
+The result:
+
+```
+chain: 33 instructions, 72 samples (of 72 in the method); critical path (*): 24 instructions
+```
+
+All of the method's 72 samples are on the chain: 67 on the loads, 1 on the arithmetic,
+and 4 on the address computation the loads share. The critical path is 24
+instructions per iteration, or three per element (`lsl`, `sub`, `add`), each waiting for
+the one before. That matches the measured speed: on an Apple M2 the loop runs at about
+0.88 ns, roughly 3 cycles, per element, whether the array fits in L1 or not.
+
+### Delta decoding
+
+A different chain, from a different loop: delta decoding, where each value is stored as
+the difference from the one before. Decoding adds each delta to the previous decoded
+value, so every element waits for the one before it:
+
+```java
+static void decodeRunning(int[] data) {
+    int previous = data[0];
+    for (int i = 1; i < data.length; i++) {
+        previous += data[i];
+        data[i] = previous;
+    }
+}
+```
+
+C2 unrolls this 8 times too, and keeps `previous` in a register. One second of decoding a
+65,536-element array, the unrolled loop abridged as before:
+
+```
+Delta.decodeRunning([I)V
+  tier 4 (C2), compile id 365, 456 bytes at 0x00000001402d6000, 68 samples
+
+  pc                  bytes        instruction                      count        %
+  ...
+  0x00000001402d6090  4b c9 30 8b  add x11, x10, w16, sxtw #2
+  0x00000001402d6094  6d 11 40 b9  ldr w13, [x11, #0x10]
+  0x00000001402d6098  cc 01 0d 0b  add w12, w14, w13
+  0x00000001402d609c  6c 11 00 b9  str w12, [x11, #0x10]                4    5.88%
+  0x00000001402d60a0  6e 15 40 b9  ldr w14, [x11, #0x14]
+  0x00000001402d60a4  cc 01 0c 0b  add w12, w14, w12
+  0x00000001402d60a8  6c 15 00 b9  str w12, [x11, #0x14]                1    1.47%
+  0x00000001402d60ac  6e 19 40 b9  ldr w14, [x11, #0x18]                6    8.82%
+  0x00000001402d60b0  cc 01 0c 0b  add w12, w14, w12
+  0x00000001402d60b4  6c 19 00 b9  str w12, [x11, #0x18]                5    7.35%
+  0x00000001402d60b8  6e 1d 40 b9  ldr w14, [x11, #0x1c]
+  0x00000001402d60bc  cc 01 0c 0b  add w12, w14, w12
+  0x00000001402d60c0  6c 1d 00 b9  str w12, [x11, #0x1c]                4    5.88%
+  0x00000001402d60c4  6e 21 40 b9  ldr w14, [x11, #0x20]
+  0x00000001402d60c8  cc 01 0c 0b  add w12, w14, w12
+  0x00000001402d60cc  6c 21 00 b9  str w12, [x11, #0x20]                6    8.82%
+  0x00000001402d60d0  6e 25 40 b9  ldr w14, [x11, #0x24]                2    2.94%
+  0x00000001402d60d4  cd 01 0c 0b  add w13, w14, w12                    2    2.94%
+  0x00000001402d60d8  6d 25 00 b9  str w13, [x11, #0x24]                2    2.94%
+  0x00000001402d60dc  6e 29 40 b9  ldr w14, [x11, #0x28]                7   10.29%
+  0x00000001402d60e0  cc 01 0d 0b  add w12, w14, w13
+  0x00000001402d60e4  6c 29 00 b9  str w12, [x11, #0x28]                3    4.41%
+  0x00000001402d60e8  6e 2d 40 b9  ldr w14, [x11, #0x2c]                5    7.35%
+  0x00000001402d60ec  ce 01 0c 0b  add w14, w14, w12
+  0x00000001402d60f0  10 22 00 11  add w16, w16, #0x8                   4    5.88%
+  0x00000001402d60f4  6e 2d 00 b9  str w14, [x11, #0x2c]               17   25.00%
+  0x00000001402d60f8  1f 02 02 6b  cmp w16, w2
+  0x00000001402d60fc  ab fc ff 54  b.lt 0x1402d6090 <+0x90>
+  0x00000001402d6100  8b 1b 40 f9  ldr x11, [x28, #0x30]
+  ...
+```
+
+This time the samples are spread over the loads and stores, with the most, 17 of 68, on
+the last store, `str w14, [x11, #0x2c]` at `+0x0f4`. The rule finds one recurrence,
+carried through `w14`. It walks back from `add w14, w14, w12` at `+0x0ec`, the
+instruction producing the next iteration's `previous`, as before. It also adds the stores
+that write out a value the chain produced. A store's operands do different jobs: in
+`str w14, [x11, #0x2c]`, `w14` is the value written out, so the store depends on the
+chain through it, while `x11` only addresses the destination. So a store joins the chain
+through its stored register (marked `(stored)`), not through its address. A store through
+`x11` of a value from outside the chain would stay out, even though `x11` comes from the
+chain's address computation.
+
+```
+  offset  instruction                   count  total  operands written by
+  +0x0f4  str w14, [x11, #0x2c]           17     17  x11 from +0x090, w14 (stored) from +0x0ec
+* +0x0ec  add w14, w14, w12                      17  w12 from +0x0e0, w14 from +0x0e8
+  +0x0e8  ldr w14, [x11, #0x2c]            5     22  x11 from +0x090
+  +0x0e4  str w12, [x11, #0x28]            3     25  x11 from +0x090, w12 (stored) from +0x0e0
+* +0x0e0  add w12, w14, w13                      25  w13 from +0x0d4, w14 from +0x0dc
+  +0x0dc  ldr w14, [x11, #0x28]            7     32  x11 from +0x090
+  +0x0d8  str w13, [x11, #0x24]            2     34  x11 from +0x090, w13 (stored) from +0x0d4
+* +0x0d4  add w13, w14, w12                2     36  w12 from +0x0c8, w14 from +0x0d0
+  +0x0d0  ldr w14, [x11, #0x24]            2     38  x11 from +0x090
+  +0x0cc  str w12, [x11, #0x20]            6     44  x11 from +0x090, w12 (stored) from +0x0c8
+* +0x0c8  add w12, w14, w12                      44  w12 from +0x0bc, w14 from +0x0c4
+  +0x0c4  ldr w14, [x11, #0x20]                  44  x11 from +0x090
+  +0x0c0  str w12, [x11, #0x1c]            4     48  x11 from +0x090, w12 (stored) from +0x0bc
+* +0x0bc  add w12, w14, w12                      48  w12 from +0x0b0, w14 from +0x0b8
+  +0x0b8  ldr w14, [x11, #0x1c]                  48  x11 from +0x090
+  +0x0b4  str w12, [x11, #0x18]            5     53  x11 from +0x090, w12 (stored) from +0x0b0
+* +0x0b0  add w12, w14, w12                      53  w12 from +0x0a4, w14 from +0x0ac
+  +0x0ac  ldr w14, [x11, #0x18]            6     59  x11 from +0x090
+  +0x0a8  str w12, [x11, #0x14]            1     60  x11 from +0x090, w12 (stored) from +0x0a4
+* +0x0a4  add w12, w14, w12                      60  w12 from +0x098, w14 from +0x0a0
+  +0x0a0  ldr w14, [x11, #0x14]                  60  x11 from +0x090
+  +0x09c  str w12, [x11, #0x10]            4     64  x11 from +0x090, w12 (stored) from +0x098
+* +0x098  add w12, w14, w13                      64  w13 from +0x094, w14 from +0x0ec on the previous iteration
+  +0x094  ldr w13, [x11, #0x10]                  64  x11 from +0x090
+  +0x090  add x11, x10, w16, sxtw #2             64
+```
+
+```
+chain: 25 instructions, 64 samples (of 68 in the method); critical path (*): 8 instructions
+```
+
+The critical path is one `add` per element, each adding a delta to the previous
+element's result: delta decoding's dependency, and nothing else. The loads bring in the
+deltas and the stores write out the decoded values, so 64 of the 68 samples are on the
+chain. The other 4 are on the loop counter's `add w16, w16, #0x8`, which the chain neither
+reads nor feeds.
+
+Written as `data[i] += data[i - 1]` instead, the same decoding isn't found. C2 keeps the
+running value in a register within an iteration, but each iteration starts by reloading
+the previous element from the array (`ldp w13, w12, [x11, #0xc]`). The dependency from
+one iteration to the next goes through a store and a load, which the analysis doesn't
+track, and the 8 `add`s within an iteration are below the straight-line threshold.
+
+The rule reports chains like this one as `LOOP_CARRIED` findings when the critical path is
+at least 8 instructions. It also reports straight-line chains, of at least 16 instructions
+within one pass through the code. Findings are ranked by the samples on their
+instructions:
 
 ```java
 List<Instruction> code = new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
 List<DependencyChain> chains = new LongDependencyChainRule().apply(
         code, new Aarch64RegisterModel(), i -> profile.count((int) (i.address() - profile.address())));
+DependencyChain chain = chains.get(0);
+chain.instructions();     // the 33 instructions the carried h depends on
+chain.criticalPath();     // the 24 that must run one after another
+chain.samples();          // 72
 ```
 
 The analysis tracks registers only. Condition flags are left out, so a compare followed
 by a branch isn't counted as a data dependency, and so are memory dependencies through
-stores and loads.
+stores and loads. Register usage is modelled for AArch64 so far.
 
 ## Using it
 

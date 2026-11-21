@@ -1,17 +1,22 @@
 package instructive.agenttest;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import instructive.agent.InstructionProfile;
+import instructive.agent.InstructionProfileFormatter;
 import instructive.agent.Sampler;
 import instructive.analyse.DependencyChain;
 import instructive.analyse.LongDependencyChainRule;
 import instructive.parse.Instruction;
 import instructive.parse.aarch64.Aarch64Disassembler;
 import instructive.parse.aarch64.Aarch64RegisterModel;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -45,14 +50,109 @@ class DependencyChainTest {
         assertFalse(chains.isEmpty(), report);
 
         DependencyChain hottestChain = chains.get(0);
-        assertTrue(hottestChain.length() >= LongDependencyChainRule.DEFAULT_MINIMUM_LENGTH, report);
-        // h = 31 * h + x is computed as lsl #5, sub, add.
-        long arithmetic = hottestChain.instructions().stream()
+        // h = 31 * h + x carried from one iteration of the unrolled loop to the next,
+        // computed as lsl #5, sub, add for each element.
+        assertEquals(DependencyChain.Kind.LOOP_CARRIED, hottestChain.kind(), report);
+        assertTrue(hottestChain.carriedRegister().isPresent(), report);
+        assertTrue(hottestChain.criticalPathLength() >= LongDependencyChainRule.DEFAULT_MINIMUM_RECURRENCE_LENGTH, report);
+        long arithmetic = hottestChain.criticalPath().stream()
                 .filter(instruction -> Set.of("lsl", "sub", "add").contains(instruction.mnemonic()))
                 .count();
-        assertTrue(arithmetic * 10 >= hottestChain.length() * 8, report);
-        // The chain runs through the code where the method spends its time.
+        assertEquals(hottestChain.criticalPathLength(), arithmetic, report);
+        // The loads feeding it are part of it, and the profile intersects it. How many of
+        // the samples land on its own instructions depends on the layout: when its last
+        // instruction is just before the loop's compare, skid puts most of them there.
+        assertTrue(hottestChain.instructions().stream().anyMatch(instruction -> instruction.mnemonic().equals("ldr")), report);
+        assertTrue(hottestChain.samples() > 0, report);
+        // The loop it runs round is where the method spends its time.
         assertTrue(hottestChain.spanSamples() * 10 >= hottest.sampled() * 9, report);
+    }
+
+    /**
+     * Delta decoding: each value is the previous decoded value plus a delta, so every
+     * element waits for the one before. The running value stays in a register, so the
+     * dependency is carried from one iteration of the unrolled loop to the next.
+     */
+    @Test
+    void flagsDeltaDecodingsDataDependency() {
+        InstructionProfile hottest = profileDeltaDecoding();
+        assertTrue(hottest.name().contains("decodeDeltas"), hottest::toString);
+        List<Instruction> instructions =
+                new Aarch64Disassembler().decodeAll(hottest.machineCode().orElseThrow(), hottest.address());
+        // A recurrence of one add per element is short per iteration: flag it from 4, so
+        // the test doesn't depend on how far C2 unrolls the loop.
+        List<DependencyChain> chains = new LongDependencyChainRule(LongDependencyChainRule.DEFAULT_MINIMUM_CHAIN_LENGTH, 4)
+                .apply(instructions, new Aarch64RegisterModel(),
+                        instruction -> hottest.count((int) (instruction.address() - hottest.address())));
+        String report = describe(hottest, chains);
+        assertFalse(chains.isEmpty(), report);
+        DependencyChain chain = chains.get(0);
+        assertEquals(DependencyChain.Kind.LOOP_CARRIED, chain.kind(), report);
+
+        // The critical path is the running value, one add per element: each adds a delta to
+        // the previous element's result.
+        Aarch64RegisterModel registers = new Aarch64RegisterModel();
+        List<Instruction> path = chain.criticalPath();
+        assertTrue(path.size() >= 4, report);
+        for (int i = 0; i < path.size(); i++) {
+            Instruction add = path.get(i);
+            assertEquals("add", add.mnemonic(), report);
+            if (i > 0) {
+                Set<String> previous = registers.usage(path.get(i - 1)).writes();
+                assertTrue(registers.usage(add).reads().stream().anyMatch(previous::contains), report);
+            }
+        }
+        assertEquals(chain.carriedRegister().orElseThrow(),
+                registers.usage(path.get(path.size() - 1)).writes().iterator().next(), report);
+        // The deltas are loaded into it and the decoded values stored from it, one of each
+        // per element; the loop's compare and branch aren't part of it.
+        long loads = chain.instructions().stream().filter(instruction -> instruction.mnemonic().equals("ldr")).count();
+        long stores = chain.instructions().stream().filter(instruction -> instruction.mnemonic().equals("str")).count();
+        assertEquals(path.size(), loads, report);
+        assertEquals(path.size(), stores, report);
+        assertTrue(chain.instructions().stream().noneMatch(instruction -> instruction.mnemonic().equals("cmp")
+                || instruction.mnemonic().startsWith("b")), report);
+        // And the profile intersects it.
+        assertTrue(chain.samples() > 0, report);
+    }
+
+    static void decodeDeltas(int[] data) {
+        int previous = data[0];
+        for (int i = 1; i < data.length; i++) {
+            previous += data[i];
+            data[i] = previous;
+        }
+    }
+
+    private static InstructionProfile profileDeltaDecoding() {
+        int[] deltas = new int[1 << 16];
+        for (int i = 0; i < deltas.length; i++) {
+            deltas[i] = (i * 0x9E3779B9) >>> 25;
+        }
+        int[] data = new int[deltas.length];
+        for (int i = 0; i < 2000; i++) {
+            System.arraycopy(deltas, 0, data, 0, data.length);
+            decodeDeltas(data); // compile it
+        }
+        Sampler.resetCounts();
+        assertTrue(Sampler.start());
+        try {
+            long deadline = System.nanoTime() + 1_000_000_000L;
+            while (System.nanoTime() < deadline) {
+                System.arraycopy(deltas, 0, data, 0, data.length);
+                decodeDeltas(data);
+            }
+        } finally {
+            Sampler.stop();
+        }
+        InstructionProfile[] hottest = new InstructionProfile[1];
+        Sampler.forEachHottestMethod(Integer.MAX_VALUE, profile -> {
+            if (hottest[0] == null && profile.name().contains("decodeDeltas")) {
+                hottest[0] = profile.snapshot();
+            }
+        });
+        assertNotNull(hottest[0], "no samples of decodeDeltas");
+        return hottest[0];
     }
 
     private static InstructionProfile profileArraysHashCode() {
@@ -83,8 +183,19 @@ class DependencyChainTest {
     private static String describe(InstructionProfile profile, List<DependencyChain> chains) {
         return profile.name() + " L" + profile.compLevel() + ", " + profile.sampled() + " samples\n"
                 + chains.stream()
-                        .map(chain -> "  " + chain.length() + " long, " + chain.samples() + " samples: "
+                        .map(chain -> "  " + chain.kind() + " " + chain.carriedRegister().orElse("") + " " + chain.length()
+                                + " instructions, critical path " + chain.criticalPathLength() + ", " + chain.samples()
+                                + " samples, " + chain.spanSamples() + " in span: "
                                 + chain.instructions().stream().map(Instruction::text).collect(Collectors.joining("; ")))
-                        .collect(Collectors.joining("\n"));
+                        .collect(Collectors.joining("\n"))
+                + "\n" + listing(profile);
+    }
+
+    private static String listing(InstructionProfile profile) {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (PrintStream out = new PrintStream(bytes, true, StandardCharsets.UTF_8)) {
+            new InstructionProfileFormatter().allInstructions().format(profile, out);
+        }
+        return bytes.toString(StandardCharsets.UTF_8);
     }
 }

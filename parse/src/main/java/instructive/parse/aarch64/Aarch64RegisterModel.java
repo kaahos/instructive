@@ -59,6 +59,7 @@ public final class Aarch64RegisterModel implements RegisterModel {
         List<String> operands = split(instruction.operands());
         Set<String> reads = new LinkedHashSet<>();
         Set<String> writes = new LinkedHashSet<>();
+        Set<String> stored = new LinkedHashSet<>();
         int memory = memoryOperand(operands);
 
         switch (mnemonic) {
@@ -76,19 +77,30 @@ public final class Aarch64RegisterModel implements RegisterModel {
             }
             case "mrs" -> registers(operands.get(0), writes);
             default -> {
-                if (READ_ONLY.contains(mnemonic) || ATOMIC_STORE.matcher(mnemonic).matches()) {
+                if (READ_ONLY.contains(mnemonic)) {
                     operands.forEach(operand -> registers(operand, reads));
+                } else if (ATOMIC_STORE.matcher(mnemonic).matches()) {
+                    operands.forEach(operand -> registers(operand, reads));
+                    registers(operands.get(0), stored);
                 } else if (ATOMIC_LOAD.matcher(mnemonic).matches() || SWAP.matcher(mnemonic).matches()) {
                     registers(operands.get(0), reads);
                     registers(operands.get(2), reads);
                     registers(operands.get(1), writes);
+                    registers(operands.get(0), stored);
                 } else if (COMPARE_AND_SWAP.matcher(mnemonic).matches()) {
                     operands.forEach(operand -> registers(operand, reads));
                     registers(operands.get(0), writes);
+                    // The new value; a pair (casp) stores the second pair.
+                    for (int i = memory / 2; i < memory; i++) {
+                        registers(operands.get(i), stored);
+                    }
                 } else if (STORE_EXCLUSIVE.matcher(mnemonic).matches()) {
                     registers(operands.get(0), writes);
                     for (int i = 1; i < operands.size(); i++) {
                         registers(operands.get(i), reads);
+                        if (i < memory) {
+                            registers(operands.get(i), stored);
+                        }
                     }
                 } else if (mnemonic.startsWith("ld")) {
                     int destinations = LOAD_PAIRS.contains(mnemonic) ? 2 : 1;
@@ -97,6 +109,10 @@ public final class Aarch64RegisterModel implements RegisterModel {
                     }
                 } else if (mnemonic.startsWith("st")) {
                     operands.forEach(operand -> registers(operand, reads));
+                    // The operands before the address are the data.
+                    for (int i = 0; i < memory; i++) {
+                        registers(operands.get(i), stored);
+                    }
                 } else if (!mnemonic.equals("b") && !mnemonic.startsWith("b.") && !operands.isEmpty()) {
                     // b, b.cond, and anything without operands (hints, barriers) use none.
                     registers(operands.get(0), writes);
@@ -112,7 +128,7 @@ public final class Aarch64RegisterModel implements RegisterModel {
         if (memory >= 0 && writesBack(operands, memory)) {
             registers(baseRegister(operands.get(memory)), writes);
         }
-        return new RegisterUsage(reads, writes, true);
+        return new RegisterUsage(reads, writes, stored, true);
     }
 
     // Pre-indexed ([xn, #imm]!) or post-indexed ([xn], #imm) addressing updates the base.
