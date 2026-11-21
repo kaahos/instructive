@@ -172,12 +172,13 @@ public final class InstructionProfileFormatter {
 
     private static int[] sampledOffsets(InstructionProfile profile) {
         int profileLength = profile.profileLength();
+        int step = profile.bytesPerCount();
         int sampled = 0;
-        for (int offset = 0; offset < profileLength; offset++) {
+        for (int offset = 0; offset < profileLength; offset += step) {
             sampled += profile.count(offset) > 0 ? 1 : 0;
         }
         int[] offsets = new int[sampled];
-        for (int offset = 0, i = 0; offset < profileLength && i < sampled; offset++) {
+        for (int offset = 0, i = 0; offset < profileLength && i < sampled; offset += step) {
             if (profile.count(offset) > 0) {
                 offsets[i++] = offset;
             }

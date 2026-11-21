@@ -29,10 +29,11 @@ yields two things:
   unwinding and never reads JVM metadata or the code heap. It does one lookup in a
   lock-free radix tree and two atomic increments.
 - **Memory overhead comparable to a stack trace sampling agent.** Instead of storing
-  stack traces, instructive keeps a 16-bit counter per byte of live compiled code, plus
-  a small header and the method's name. Space is reused as methods are unloaded. In a
-  test with heavy class churn, the storage settled at about 2 MB for about 800 KB of
-  live compiled code.
+  stack traces, instructive keeps a 16-bit counter per possible instruction start in
+  live compiled code (every 4 bytes on AArch64, every byte on x86), plus a small header
+  and the method's name. Space is reused as methods are unloaded. In a test with heavy
+  class churn on AArch64, the storage settled at about 950 KB for 1.2 MB of live
+  compiled code.
 - **Online use.** This is a similar view to what JMH's `perfasm` profiler gives you
   for a benchmark: hot regions of the generated assembly. JMH does that offline, for
   benchmarks, using external tools. instructive aims to provide it from inside a running
