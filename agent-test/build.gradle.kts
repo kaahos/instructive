@@ -41,6 +41,7 @@ tasks.test {
             // loop is profiled as a method of its own.
             "-XX:CompileCommand=dontinline,instructive.agenttest.NotUnrolledLoopTest::*",
             "-XX:CompileCommand=dontinline,instructive.agenttest.PointerChasingTest::sum*",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.FailedCheckTest::sum*",
         )
     })
 }

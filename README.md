@@ -151,6 +151,8 @@ model and the samples per instruction, and returns its findings hottest first.
 | `LongDependencyChainRule` | chains of instructions that each wait for the one before, within an iteration or carried from one iteration to the next | [Finding long dependency chains](#finding-long-dependency-chains) |
 | `NotUnrolledLoopRule` | hot loops handling one element per iteration, which C2 hasn't unrolled and so can't vectorise | [Finding loops that aren't unrolled](#finding-loops-that-arent-unrolled) |
 | `PointerChasingRule` | loops where each load's address comes from the previous iteration's load, as in walking a linked list | [Finding pointer chasing](#finding-pointer-chasing) |
+| `FailedCheckRule` | explicit null checks that throw: nulls have been seen there | [Finding null checks that have failed](#finding-null-checks-that-have-failed) |
+| `FailedCheckRule` | explicit range checks that throw, or that a loop kept: out-of-bounds indexes have been seen there, or the loop isn't counted | [Finding range checks that have failed](#finding-range-checks-that-have-failed) |
 
 ## Finding long dependency chains
 
@@ -752,6 +754,308 @@ chase.chaseSamples();     // 88 of them on the chase and its dereferences
 The `ArrayList` loop has no finding: its recurrences are the sum and the index, neither
 through a load.
 
+## Finding null checks that have failed
+
+C2 doesn't test references for null. It compiles a field access as a plain load and
+relies on the load faulting if the reference is null: an *implicit* null check, which
+costs nothing until it fails. When it does fail, the signal handler turns the fault into
+the `NullPointerException`. If that happens a few times at the same location, or the
+profile recorded a null there before the method was compiled, C2 recompiles the method
+with an *explicit* test and branch at that location, and compiles the failure as a throw
+of a preallocated exception: C2's fast throw, which has no stack trace
+(`-XX:+OmitStackTraceInFastThrow`, the default).
+
+So a test and a branch to a throw before a field access says that nulls have been seen
+there. And since those exceptions have no stack trace, it says where the
+`NullPointerException`s without one come from.
+
+### Summing boxes
+
+```java
+static int sumBoxes(Box[] boxes) {
+    int sum = 0;
+    for (int i = 0; i < boxes.length; i++) {
+        sum += boxes[i].value;
+    }
+    return sum;
+}
+```
+
+Compiled by C2 on JDK 25 (Linux), the main loop, unrolled 4 times, loads 4 references
+and then each `value` (`ldr w14, [x15, #0xc]`), with no tests:
+
+```
+Trap.sumBoxes([LTrap$Box;)I
+  tier 4 (C2), compile id 305, 376 bytes at 0x0000ffff93f63340, 96 samples
+
+  pc                  bytes        instruction                       count        %
+  ...
+  0x0000ffff93f633b0  2e c8 2a 8b  add x14, x1, w10, sxtw #2
+  0x0000ffff93f633b4  d0 3d 42 29  ldp w16, w15, [x14, #0x10]
+  0x0000ffff93f633b8  d2 19 40 b9  ldr w18, [x14, #0x18]
+  0x0000ffff93f633bc  10 0e 40 b9  ldr w16, [x16, #0xc]
+  0x0000ffff93f633c0  d1 1d 40 b9  ldr w17, [x14, #0x1c]
+  0x0000ffff93f633c4  ee 0d 40 b9  ldr w14, [x15, #0xc]                 13   13.54%
+  0x0000ffff93f633c8  52 0e 40 b9  ldr w18, [x18, #0xc]                  9    9.38%
+  0x0000ffff93f633cc  0f 00 10 0b  add w15, w0, w16
+  0x0000ffff93f633d0  31 0e 40 b9  ldr w17, [x17, #0xc]                 63   65.63%
+  0x0000ffff93f633d4  ef 01 0e 0b  add w15, w15, w14
+  0x0000ffff93f633d8  ee 01 12 0b  add w14, w15, w18
+  0x0000ffff93f633dc  4a 11 00 11  add w10, w10, #0x4
+  0x0000ffff93f633e0  c0 01 11 0b  add w0, w14, w17
+  0x0000ffff93f633e4  5f 01 0d 6b  cmp w10, w13
+  0x0000ffff93f633e8  4b fe ff 54  b.lt 0xffff93f633b0 <+0x70>          11   11.46%
+  ...
+```
+
+The same method after compiled code has thrown 5 `NullPointerException`s from it. Three
+were enough on JDK 17, 21 and 25; fewer left the code unchanged. Each reference is now
+tested with `cbz` before it is used, in the code before the loop (`+0x03c`), in each of
+the 4 copies in the loop (`+0x088` to `+0x0a0`) and in the loop after it (`+0x0f0`),
+and every test branches to `+0x10c`. That loads the preallocated exception (`mov x1`,
+`movk`), clears one of its fields, pops the frame and jumps out to the exception handler:
+
+```
+Trap.sumBoxes([LTrap$Box;)I
+  tier 4 (C2), compile id 313, 520 bytes at 0x0000ffff77f63900, 97 samples
+
+  pc                  bytes        instruction                          count        %
+  ...
+  0x0000ffff77f63938  2d 10 40 b9  ldr w13, [x1, #0x10]
+  0x0000ffff77f6393c  8d 06 00 34  cbz w13, 0xffff77f63a0c <+0x10c>
+  0x0000ffff77f63940  6c 0c 00 51  sub w12, w3, #0x3
+  0x0000ffff77f63944  ea 03 00 32  orr w10, wzr, #0x1
+  0x0000ffff77f63948  a0 0d 40 b9  ldr w0, [x13, #0xc]
+  0x0000ffff77f6394c  9f 05 00 71  cmp w12, #0x1
+  0x0000ffff77f63950  8d 04 00 54  b.le 0xffff77f639e0 <+0xe0>
+  0x0000ffff77f63954  0d f4 81 52  mov w13, #0xfa0
+  0x0000ffff77f63958  6e 00 0a 4b  sub w14, w3, w10
+  0x0000ffff77f6395c  9f 01 0a 6b  cmp w12, w10
+  0x0000ffff77f63960  cb 0d 00 51  sub w11, w14, #0x3
+  0x0000ffff77f63964  eb b3 8b 1a  csel w11, wzr, w11, lt
+  0x0000ffff77f63968  7f 81 3e 71  cmp w11, #0xfa0
+  0x0000ffff77f6396c  ab 81 8b 1a  csel w11, w13, w11, hi
+  0x0000ffff77f63970  6e 01 0a 0b  add w14, w11, w10
+  0x0000ffff77f63974  1f 20 03 d5  nop
+  0x0000ffff77f63978  1f 20 03 d5  nop
+  0x0000ffff77f6397c  1f 20 03 d5  nop
+  0x0000ffff77f63980  2b c8 2a 8b  add x11, x1, w10, sxtw #2
+  0x0000ffff77f63984  6f 11 40 b9  ldr w15, [x11, #0x10]                   20   20.62%
+  0x0000ffff77f63988  2f 04 00 34  cbz w15, 0xffff77f63a0c <+0x10c>
+  0x0000ffff77f6398c  71 15 40 b9  ldr w17, [x11, #0x14]                   13   13.40%
+  0x0000ffff77f63990  f1 03 00 34  cbz w17, 0xffff77f63a0c <+0x10c>         2    2.06%
+  0x0000ffff77f63994  70 19 40 b9  ldr w16, [x11, #0x18]                   13   13.40%
+  0x0000ffff77f63998  b0 03 00 34  cbz w16, 0xffff77f63a0c <+0x10c>
+  0x0000ffff77f6399c  72 1d 40 b9  ldr w18, [x11, #0x1c]                    9    9.28%
+  0x0000ffff77f639a0  72 03 00 34  cbz w18, 0xffff77f63a0c <+0x10c>
+  0x0000ffff77f639a4  eb 0d 40 b9  ldr w11, [x15, #0xc]
+  0x0000ffff77f639a8  31 0e 40 b9  ldr w17, [x17, #0xc]
+  0x0000ffff77f639ac  0f 0e 40 b9  ldr w15, [x16, #0xc]                     2    2.06%
+  0x0000ffff77f639b0  10 00 0b 0b  add w16, w0, w11
+  0x0000ffff77f639b4  10 02 11 0b  add w16, w16, w17
+  0x0000ffff77f639b8  4b 0e 40 b9  ldr w11, [x18, #0xc]                    34   35.05%
+  0x0000ffff77f639bc  10 02 0f 0b  add w16, w16, w15
+  0x0000ffff77f639c0  4a 11 00 11  add w10, w10, #0x4                       2    2.06%
+  0x0000ffff77f639c4  00 02 0b 0b  add w0, w16, w11
+  0x0000ffff77f639c8  5f 01 0e 6b  cmp w10, w14
+  0x0000ffff77f639cc  ab fd ff 54  b.lt 0xffff77f63980 <+0x80>
+  0x0000ffff77f639d0  8b 1b 40 f9  ldr x11, [x28, #0x30]
+  0x0000ffff77f639d4  7f 01 40 b9  ldr wzr, [x11]
+  0x0000ffff77f639d8  5f 01 0c 6b  cmp w10, w12
+  0x0000ffff77f639dc  eb fb ff 54  b.lt 0xffff77f63958 <+0x58>
+  0x0000ffff77f639e0  5f 01 03 6b  cmp w10, w3
+  0x0000ffff77f639e4  ca 02 00 54  b.ge 0xffff77f63a3c <+0x13c>
+  0x0000ffff77f639e8  2b c8 2a 8b  add x11, x1, w10, sxtw #2
+  0x0000ffff77f639ec  6b 11 40 b9  ldr w11, [x11, #0x10]
+  0x0000ffff77f639f0  eb 00 00 34  cbz w11, 0xffff77f63a0c <+0x10c>
+  0x0000ffff77f639f4  6c 0d 40 b9  ldr w12, [x11, #0xc]
+  0x0000ffff77f639f8  4a 05 00 11  add w10, w10, #0x1
+  0x0000ffff77f639fc  00 00 0c 0b  add w0, w0, w12
+  0x0000ffff77f63a00  5f 01 03 6b  cmp w10, w3
+  0x0000ffff77f63a04  2b ff ff 54  b.lt 0xffff77f639e8 <+0xe8>
+  0x0000ffff77f63a08  0d 00 00 14  b 0xffff77f63a3c <+0x13c>
+  0x0000ffff77f63a0c  eb 03 1f aa  mov x11, xzr
+  0x0000ffff77f63a10  01 a2 83 d2  mov x1, #0x1d10
+  0x0000ffff77f63a14  a1 fd bf f2  movk x1, #0xffed, lsl #16
+  0x0000ffff77f63a18  01 00 c0 f2  movk x1, #0x0, lsl #32
+  0x0000ffff77f63a1c  2a 50 00 91  add x10, x1, #0x14
+  0x0000ffff77f63a20  8e 23 41 39  ldrb w14, [x28, #0x48]
+  0x0000ffff77f63a24  0e 03 00 35  cbnz w14, 0xffff77f63a84 <+0x184>
+  0x0000ffff77f63a28  4b 01 00 b9  str w11, [x10]
+  0x0000ffff77f63a2c  fd 7b 42 a9  ldp x29, x30, [sp, #0x20]
+  0x0000ffff77f63a30  ff c3 00 91  add sp, sp, #0x30
+  0x0000ffff77f63a34  83 04 ee 17  b 0xffff77ae4c40
+  ...
+```
+
+The tests cost little here: they are predicted, and the loop ran at the same speed. The
+finding is the evidence that nulls reach this code.
+
+### The rule
+
+`FailedCheckRule` looks for conditional branches to a failure path: a throw (code that
+pops the frame and jumps out of the method without returning) or an uncommon trap
+(`mov w1, #request` with a negative request, then a call). A `cbz` or `cbnz` is a null
+check if the register it tests is then used as an address, directly or once decoded.
+Branches inside the failure paths, like the GC barrier's `cbnz` on the throw path, are
+ignored. Checks that share a throw are one bytecode's check, copied by unrolling, so
+they are one finding:
+
+```java
+List<Instruction> code = new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
+List<FailedCheck> checks = new FailedCheckRule().apply(
+        code, new Aarch64RegisterModel(), i -> profile.count((int) (i.address() - profile.address())));
+FailedCheck check = checks.get(0);
+check.kind();         // NULL_CHECK
+check.failure();      // THROW
+check.checks();       // the 6 cbz, at +0x03c, +0x088, +0x090, +0x098, +0x0a0 and +0x0f0
+check.failurePath();  // the address of +0x10c
+check.inLoop();       // true
+check.samples();      // 95 of the method's 97, on the loops containing the checks
+```
+
+Null checks that branch to an uncommon trap rather than a throw aren't reported: C2
+emits those where it can't fold the check into a load, such as before a cast, which lets
+null through, speculating that the reference is never null. The `LinkedList` iteration
+above has one, before each `item`'s class check; no null was ever seen there.
+
+## Finding range checks that have failed
+
+C2 removes the range checks from a counted loop: it checks once, before the loop, that
+every index the loop will use is in bounds (loop predication), or splits the loop so the
+main part needs no checks. When a check has failed, C2 recompiles the method with
+explicit checks where it can't rule out failure, branching to a throw like the null
+check's. Where it can't eliminate the checks from a loop at all, each iteration checks,
+branching to an uncommon trap.
+
+### Summing a prefix
+
+```java
+static int sumRange(int[] a, int n) {
+    int sum = 0;
+    for (int i = 0; i < n; i++) {
+        sum += a[i];
+    }
+    return sum;
+}
+```
+
+Called only with `n == a.length`, C2 on JDK 25 checks the bounds before the loop with
+predicates that trap if they fail, and the loop has no checks. After one call with
+`n == a.length + 1` has thrown `ArrayIndexOutOfBoundsException` from compiled code, it
+compiles the method differently. The main loop, unrolled 16 times, is still unchecked,
+but it now runs to the smaller of `n` and the length (the `csel` at `+0x03c`). An empty
+array is tested before it (`cbz w15` at `+0x05c`), and the loop after it, which finishes
+the remainder one element at a time, checks every index (`cmp w16, w15` and `b.hs` at
+`+0x13c`). Both branch to the throw at `+0x174`:
+
+```
+Trap.sumRange([II)I
+  tier 4 (C2), compile id 313, 568 bytes at 0x0000ffff8bf63d80, 98 samples
+
+  pc                  bytes        instruction                          count        %
+  ...
+  0x0000ffff8bf63dac  2f 0c 40 b9  ldr w15, [x1, #0xc]
+  0x0000ffff8bf63db0  ea 7d 40 93  sxtw x10, w15
+  0x0000ffff8bf63db4  4b 7c 40 93  sxtw x11, w2
+  0x0000ffff8bf63db8  7f 01 0a eb  cmp x11, x10
+  0x0000ffff8bf63dbc  6a b1 8a 9a  csel x10, x11, x10, lt
+  0x0000ffff8bf63dc0  4a 3d 00 d1  sub x10, x10, #0xf
+  0x0000ffff8bf63dc4  e8 83 61 b2  mov x8, #-0x80000000
+  0x0000ffff8bf63dc8  5f 01 08 eb  cmp x10, x8
+  0x0000ffff8bf63dcc  eb 83 61 b2  mov x11, #-0x80000000
+  0x0000ffff8bf63dd0  6a b1 8a 9a  csel x10, x11, x10, lt
+  0x0000ffff8bf63dd4  f0 03 00 32  orr w16, wzr, #0x1
+  0x0000ffff8bf63dd8  f2 03 0a 2a  mov w18, w10
+  0x0000ffff8bf63ddc  cf 08 00 34  cbz w15, 0xffff8bf63ef4 <+0x174>
+  0x0000ffff8bf63de0  20 10 40 b9  ldr w0, [x1, #0x10]
+  0x0000ffff8bf63de4  5f 06 00 71  cmp w18, #0x1
+  0x0000ffff8bf63de8  2d 06 00 54  b.le 0xffff8bf63eac <+0x12c>
+  0x0000ffff8bf63dec  0e d0 87 52  mov w14, #0x3e80
+  0x0000ffff8bf63df0  5f 02 10 6b  cmp w18, w16
+  0x0000ffff8bf63df4  4b 02 10 4b  sub w11, w18, w16
+  0x0000ffff8bf63df8  eb b3 8b 1a  csel w11, wzr, w11, lt
+  0x0000ffff8bf63dfc  08 d0 87 52  mov w8, #0x3e80
+  0x0000ffff8bf63e00  7f 01 08 6b  cmp w11, w8
+  0x0000ffff8bf63e04  cb 81 8b 1a  csel w11, w14, w11, hi
+  0x0000ffff8bf63e08  63 01 10 0b  add w3, w11, w16
+  0x0000ffff8bf63e0c  1f 20 03 d5  nop
+  0x0000ffff8bf63e10  31 c8 30 8b  add x17, x1, w16, sxtw #2
+  0x0000ffff8bf63e14  2a 32 42 29  ldp w10, w12, [x17, #0x10]
+  0x0000ffff8bf63e18  0a 00 0a 0b  add w10, w0, w10
+  ...                                          (16 loads and adds, no checks)
+  0x0000ffff8bf63e7c  2d 4a 40 b9  ldr w13, [x17, #0x48]
+  0x0000ffff8bf63e80  4a 01 00 0b  add w10, w10, w0
+  0x0000ffff8bf63e84  2c 4e 40 b9  ldr w12, [x17, #0x4c]                   93   94.90%
+  0x0000ffff8bf63e88  4b 01 0d 0b  add w11, w10, w13
+  0x0000ffff8bf63e8c  10 42 00 11  add w16, w16, #0x10
+  0x0000ffff8bf63e90  60 01 0c 0b  add w0, w11, w12
+  0x0000ffff8bf63e94  1f 02 03 6b  cmp w16, w3
+  0x0000ffff8bf63e98  cb fb ff 54  b.lt 0xffff8bf63e10 <+0x90>
+  0x0000ffff8bf63e9c  8a 1b 40 f9  ldr x10, [x28, #0x30]                    1    1.02%
+  0x0000ffff8bf63ea0  5f 01 40 b9  ldr wzr, [x10]
+  0x0000ffff8bf63ea4  1f 02 12 6b  cmp w16, w18
+  0x0000ffff8bf63ea8  4b fa ff 54  b.lt 0xffff8bf63df0 <+0x70>
+  0x0000ffff8bf63eac  1f 02 02 6b  cmp w16, w2
+  0x0000ffff8bf63eb0  2a 01 00 54  b.ge 0xffff8bf63ed4 <+0x154>
+  0x0000ffff8bf63eb4  2a c8 30 8b  add x10, x1, w16, sxtw #2                1    1.02%
+  0x0000ffff8bf63eb8  1f 02 0f 6b  cmp w16, w15
+  0x0000ffff8bf63ebc  c2 01 00 54  b.hs 0xffff8bf63ef4 <+0x174>
+  0x0000ffff8bf63ec0  4b 11 40 b9  ldr w11, [x10, #0x10]
+  0x0000ffff8bf63ec4  10 06 00 11  add w16, w16, #0x1
+  0x0000ffff8bf63ec8  00 00 0b 0b  add w0, w0, w11
+  0x0000ffff8bf63ecc  1f 02 02 6b  cmp w16, w2
+  0x0000ffff8bf63ed0  2b ff ff 54  b.lt 0xffff8bf63eb4 <+0x134>
+  0x0000ffff8bf63ed4  fd 7b 41 a9  ldp x29, x30, [sp, #0x10]
+  0x0000ffff8bf63ed8  ff 83 00 91  add sp, sp, #0x20
+  0x0000ffff8bf63edc  88 17 40 f9  ldr x8, [x28, #0x28]
+  0x0000ffff8bf63ee0  ff 63 28 eb  cmp sp, x8
+  0x0000ffff8bf63ee4  08 05 00 54  b.hi 0xffff8bf63f84 <+0x204>
+  0x0000ffff8bf63ee8  c0 03 5f d6  ret
+  0x0000ffff8bf63eec  e0 03 1f 2a  mov w0, wzr
+  0x0000ffff8bf63ef0  f9 ff ff 17  b 0xffff8bf63ed4 <+0x154>
+  0x0000ffff8bf63ef4  eb 03 1f aa  mov x11, xzr
+  0x0000ffff8bf63ef8  01 c8 83 d2  mov x1, #0x1e40
+  0x0000ffff8bf63efc  a1 fd bf f2  movk x1, #0xffed, lsl #16
+  0x0000ffff8bf63f00  01 00 c0 f2  movk x1, #0x0, lsl #32
+  0x0000ffff8bf63f04  2a 50 00 91  add x10, x1, #0x14
+  0x0000ffff8bf63f08  8e 23 41 39  ldrb w14, [x28, #0x48]
+  0x0000ffff8bf63f0c  4e 01 00 35  cbnz w14, 0xffff8bf63f34 <+0x1b4>
+  0x0000ffff8bf63f10  4b 01 00 b9  str w11, [x10]
+  0x0000ffff8bf63f14  fd 7b 41 a9  ldp x29, x30, [sp, #0x10]
+  0x0000ffff8bf63f18  ff 83 00 91  add sp, sp, #0x20
+  0x0000ffff8bf63f1c  c9 d9 ed 17  b 0xffff8bada640
+  ...
+```
+
+Here the checks are outside the hot loop, so they cost almost nothing (1 of 98 samples);
+again the finding is the evidence that out-of-bounds indexes reach this code.
+
+### Range checks a loop kept
+
+A loop C2 can't treat as counted keeps its range checks, and each fails to an uncommon
+trap with reason `range_check`. `addWithCallInCondition`, in
+[Finding loops that aren't unrolled](#finding-loops-that-arent-unrolled), checks each of
+its 3 arrays on every iteration (the `b.hs` at `+0x090`, `+0x09c` and `+0x0ac`), and so
+does a loop counted by a `long` that indexes with `(int) i`, after each of its unrolled
+copies. `FailedCheckRule` reports these too, with the trap request:
+
+```java
+check.kind();         // RANGE_CHECK
+check.failure();      // TRAP
+check.trapRequest();  // -0x1c
+check.trapReason();   // 3, range_check
+check.trapAction();   // 3, make_not_entrant
+check.checks();       // the 3 b.hs
+```
+
+A range check is a compare followed by an unsigned branch (`b.hs`, `b.hi`, `b.ls` or
+`b.lo`), or a `cbz` of a length such a compare uses. Range checks that trap are only
+reported in loops: one outside a loop is a single access that nothing could eliminate.
+Traps for other reasons, such as the predicates that stand in for eliminated checks,
+aren't reported, and neither are the reasons' numbers above 3, which change between JDK
+versions.
+
 ## Using it
 
 Load the native library, either with the Java agent (`-javaagent:agent.jar`) or by
@@ -830,6 +1134,6 @@ published: build it locally.
   differences between these versions. On macOS, JDKs before 25 don't export the
   VMStructs symbols at all.
 - **Interpreted code** is counted, but not attributed to methods.
-- **Analysis rules** (`LongDependencyChainRule`, `NotUnrolledLoopRule`, `PointerChasingRule`) work on AArch64
+- **Analysis rules** (`LongDependencyChainRule`, `NotUnrolledLoopRule`, `PointerChasingRule`, `FailedCheckRule`) work on AArch64
   only so far: they need a register model, and only `Aarch64RegisterModel` exists. They
   track registers, not memory.

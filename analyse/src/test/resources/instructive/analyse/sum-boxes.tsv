@@ -1,0 +1,91 @@
+# Trap.sumBoxes([LTrap$Box;)I: for (i < boxes.length) sum += boxes[i].value, never null
+# C2 on JDK 25, Linux aarch64, one second of samples. Columns: bytes, samples, offset and disassembly.
+1f 20 03 d5	0	+0x000  nop
+e9 53 40 d1	0	+0x004  sub x9, sp, #0x14, lsl #12
+3f 01 00 f9	0	+0x008  str xzr, [x9]
+ff c3 00 d1	0	+0x00c  sub sp, sp, #0x30
+fd 7b 02 a9	0	+0x010  stp x29, x30, [sp, #0x20]
+88 0a 00 18	0	+0x014  ldr w8, 0xffff93f634a4
+89 23 40 b9	0	+0x018  ldr w9, [x28, #0x20]
+1f 01 09 eb	0	+0x01c  cmp x8, x9
+81 09 00 54	0	+0x020  b.ne 0xffff93f63490 <+0x150>
+22 0c 40 b9	0	+0x024  ldr w2, [x1, #0xc]
+82 06 00 34	0	+0x028  cbz w2, 0xffff93f63438 <+0xf8>
+4a 04 00 51	0	+0x02c  sub w10, w2, #0x1
+5f 01 02 6b	0	+0x030  cmp w10, w2
+62 06 00 54	0	+0x034  b.hs 0xffff93f63440 <+0x100>
+2a 10 40 b9	0	+0x038  ldr w10, [x1, #0x10]
+40 0d 40 b9	0	+0x03c  ldr w0, [x10, #0xc]
+4c 0c 00 51	0	+0x040  sub w12, w2, #0x3
+ea 03 00 32	0	+0x044  orr w10, wzr, #0x1
+9f 05 00 71	0	+0x048  cmp w12, #0x1
+8d 03 00 54	0	+0x04c  b.le 0xffff93f633fc <+0xbc>
+0b f4 81 52	0	+0x050  mov w11, #0xfa0
+4d 00 0a 4b	0	+0x054  sub w13, w2, w10
+9f 01 0a 6b	0	+0x058  cmp w12, w10
+ae 0d 00 51	0	+0x05c  sub w14, w13, #0x3
+ee b3 8e 1a	0	+0x060  csel w14, wzr, w14, lt
+df 81 3e 71	0	+0x064  cmp w14, #0xfa0
+6e 81 8e 1a	0	+0x068  csel w14, w11, w14, hi
+cd 01 0a 0b	0	+0x06c  add w13, w14, w10
+2e c8 2a 8b	0	+0x070  add x14, x1, w10, sxtw #2
+d0 3d 42 29	0	+0x074  ldp w16, w15, [x14, #0x10]
+d2 19 40 b9	0	+0x078  ldr w18, [x14, #0x18]
+10 0e 40 b9	0	+0x07c  ldr w16, [x16, #0xc]
+d1 1d 40 b9	0	+0x080  ldr w17, [x14, #0x1c]
+ee 0d 40 b9	13	+0x084  ldr w14, [x15, #0xc]
+52 0e 40 b9	9	+0x088  ldr w18, [x18, #0xc]
+0f 00 10 0b	0	+0x08c  add w15, w0, w16
+31 0e 40 b9	63	+0x090  ldr w17, [x17, #0xc]
+ef 01 0e 0b	0	+0x094  add w15, w15, w14
+ee 01 12 0b	0	+0x098  add w14, w15, w18
+4a 11 00 11	0	+0x09c  add w10, w10, #0x4
+c0 01 11 0b	0	+0x0a0  add w0, w14, w17
+5f 01 0d 6b	0	+0x0a4  cmp w10, w13
+4b fe ff 54	11	+0x0a8  b.lt 0xffff93f633b0 <+0x70>
+8d 1b 40 f9	0	+0x0ac  ldr x13, [x28, #0x30]
+bf 01 40 b9	0	+0x0b0  ldr wzr, [x13]
+5f 01 0c 6b	0	+0x0b4  cmp w10, w12
+eb fc ff 54	0	+0x0b8  b.lt 0xffff93f63394 <+0x54>
+5f 01 02 6b	0	+0x0bc  cmp w10, w2
+0a 01 00 54	0	+0x0c0  b.ge 0xffff93f63420 <+0xe0>
+2b c8 2a 8b	0	+0x0c4  add x11, x1, w10, sxtw #2
+6c 11 40 b9	0	+0x0c8  ldr w12, [x11, #0x10]
+8b 0d 40 b9	0	+0x0cc  ldr w11, [x12, #0xc]
+4a 05 00 11	0	+0x0d0  add w10, w10, #0x1
+00 00 0b 0b	0	+0x0d4  add w0, w0, w11
+5f 01 02 6b	0	+0x0d8  cmp w10, w2
+4b ff ff 54	0	+0x0dc  b.lt 0xffff93f63404 <+0xc4>
+fd 7b 42 a9	0	+0x0e0  ldp x29, x30, [sp, #0x20]
+ff c3 00 91	0	+0x0e4  add sp, sp, #0x30
+88 17 40 f9	0	+0x0e8  ldr x8, [x28, #0x28]
+ff 63 28 eb	0	+0x0ec  cmp sp, x8
+a8 02 00 54	0	+0x0f0  b.hi 0xffff93f63484 <+0x144>
+c0 03 5f d6	0	+0x0f4  ret
+e0 03 1f 2a	0	+0x0f8  mov w0, wzr
+f9 ff ff 17	0	+0x0fc  b 0xffff93f63420 <+0xe0>
+fd 03 01 aa	0	+0x100  mov x29, x1
+e2 03 00 b9	0	+0x104  str w2, [sp]
+21 12 80 12	0	+0x108  mov w1, #-0x92
+dd cb ed 97	0	+0x10c  bl 0xffff93ad63c0
+1f 20 03 d5	0	+0x110  nop
+1f 41 80 f2	0	+0x114  movk xzr, #0x208
+1f 20 80 f2	0	+0x118  movk xzr, #0x100
+21 01 80 12	0	+0x11c  mov w1, #-0xa
+d8 cb ed 97	0	+0x120  bl 0xffff93ad63c0
+1f 20 03 d5	0	+0x124  nop
+9f 43 80 f2	0	+0x128  movk xzr, #0x21c
+1f 40 80 f2	0	+0x12c  movk xzr, #0x200
+21 01 80 12	0	+0x130  mov w1, #-0xa
+d3 cb ed 97	0	+0x134  bl 0xffff93ad63c0
+1f 20 03 d5	0	+0x138  nop
+1f 46 80 f2	0	+0x13c  movk xzr, #0x230
+1f 60 80 f2	0	+0x140  movk xzr, #0x300
+28 fd ff 10	0	+0x144  adr x8, 0xffff93f63428
+88 a3 02 f9	0	+0x148  str x8, [x28, #0x540]
+fd 65 ea 17	0	+0x14c  b 0xffff939fcc80
+08 30 88 d2	0	+0x150  mov x8, #0x4180
+08 74 b2 f2	0	+0x154  movk x8, #0x93a0, lsl #16
+e8 ff df f2	0	+0x158  movk x8, #0xffff, lsl #32
+00 01 3f d6	0	+0x15c  blr x8
+b1 ff ff 17	0	+0x160  b 0xffff93f63364 <+0x24>
