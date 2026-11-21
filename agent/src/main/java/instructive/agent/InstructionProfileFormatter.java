@@ -3,6 +3,7 @@ package instructive.agent;
 import instructive.parse.Disassembler;
 import instructive.parse.Instruction;
 import instructive.parse.aarch64.Aarch64Disassembler;
+import instructive.parse.x86.X86Disassembler;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
@@ -32,10 +33,10 @@ import java.util.Optional;
  * and instructions are shown as {@code ?}.
  *
  * <p>Instructions are decoded with a {@link Disassembler}, by default the one for this
- * JVM's architecture. Without one (there is none for x86-64 yet) the instruction column
- * is left out and the bytes column shows the bytes up to the next sampled PC, at most
- * 15 (the longest x86 instruction): it starts with the sampled instruction but may run
- * on into the ones after it.
+ * JVM's architecture ({@link Aarch64Disassembler} or {@link X86Disassembler}). Without
+ * one the instruction column is left out and the bytes column shows the bytes up to the
+ * next sampled PC, at most 15 (the longest x86 instruction): it starts with the sampled
+ * instruction but may run on into the ones after it.
  *
  * <p>Formatting a live flyweight from a consumer is allowed while the consumer runs,
  * but counts can change mid-table; format a {@link InstructionProfile#snapshot()} for a
@@ -67,6 +68,7 @@ public final class InstructionProfileFormatter {
     public static Optional<Disassembler> forArchitecture(String arch) {
         return switch (arch.toLowerCase(Locale.ROOT)) {
             case "aarch64", "arm64" -> Optional.of(new Aarch64Disassembler());
+            case "amd64", "x86_64" -> Optional.of(new X86Disassembler());
             default -> Optional.empty();
         };
     }

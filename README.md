@@ -119,6 +119,26 @@ How to read it:
 - **The samples** fall inside the loop, heaviest on the compare at its end.
 - **After the loop,** `ldr wzr, [x12]` is HotSpot's safepoint poll.
 
+On x86-64 Linux the listing is in Intel syntax. Here is a similar loop on an Intel Xeon
+(only sampled instructions, abridged):
+
+```
+Demo.sum([I)J
+  tier 4 (C2), compile id 352, 624 bytes at 0x00007f60dba92d00, 297 samples
+
+  pc                  bytes           instruction        count        %
+  0x00007f60dba92dbd  49 c1 e0 05     shl r8, 0x5           14    4.71%
+  0x00007f60dba92ddb  4c 03 f2        add r14, rdx          12    4.04%
+  ...
+  0x00007f60dba92e4a  4d 8b d8        mov r11, r8           14    4.71%
+  0x00007f60dba92e4d  49 c1 eb 03     shr r11, 0x3           2    0.67%
+  0x00007f60dba92e51  49 33 c3        xor rax, r11          14    4.71%
+  0x00007f60dba92e54  49 03 c0        add rax, r8           14    4.71%
+  0x00007f60dba92e57  48 8b f8        mov rdi, rax          16    5.39%
+  0x00007f60dba92e5a  48 c1 ef 03     shr rdi, 0x3           1    0.34%
+  0x00007f60dba92e5e  41 83 c2 08     add r10d, 0x8         18    6.06%
+```
+
 ## Using it
 
 Load the native library, either with the Java agent (`-javaagent:agent.jar`) or by
@@ -163,8 +183,11 @@ a single instruction, so continuous profiling should reset regularly.
   code cache, using layout information from HotSpot's VMStructs. It only does so
   after checking that the nmethod found there has exactly the profile's address, size
   and compile id.
-- **Disassembly:** the `parse` module has an AArch64 decoder whose output matches
-  `llvm-objdump`. `InstructionProfileFormatter` uses it to print the listing above.
+- **Disassembly:** the `parse` module has AArch64 and x86-64 decoders, written in Java,
+  whose output matches `llvm-objdump` (Intel syntax on x86-64). The x86-64 one covers
+  the general purpose, x87, SSE, AVX and AVX-512 instructions; its vector instruction
+  table is generated from LLVM. `InstructionProfileFormatter` uses them to print the
+  listings above.
 
 ## Building
 
@@ -177,9 +200,10 @@ library is packaged into the agent jar under `META-INF/native-libs/<os>-<arch>/`
 
 ## Status and limitations
 
-- **Platforms:** developed and tested on macOS on Apple Silicon. The Linux code paths,
-  including per-thread CPU timers, are written but have not yet been compiled or run.
-- **Disassembly is AArch64 only.** On x86-64 the formatter shows raw instruction bytes.
+- **Platforms:** tested on macOS on Apple Silicon and on Linux x86-64 (Rocky Linux 9).
+  Linux on AArch64 and macOS on Intel haven't been tried.
+- **Disassembly** covers AArch64 (scalar; vector SIMD is only classified) and x86-64
+  (APX, XOP and 3DNow! aren't decoded).
 - **JDK versions:** JDK 25 is required at runtime, because the classes are compiled
   for it. The code cache layout comes from VMStructs, whose entries change between
   releases. The reader is written to handle the differences in JDK 11, 17 and 21, but
