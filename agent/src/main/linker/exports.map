@@ -1,0 +1,10 @@
+/* Linux dynamic symbol exports: only the JNI entry points. Everything else, including
+   C++ standard library templates instantiated in our code (which libstdc++ marks with
+   default visibility), stays local. */
+{
+    global:
+        Java_*;
+        JNI_*;
+    local:
+        *;
+};

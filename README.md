@@ -29,10 +29,11 @@ yields two things:
   unwinding and never reads JVM metadata or the code heap. It does one lookup in a
   lock-free radix tree and two atomic increments.
 - **Memory overhead comparable to a stack trace sampling agent.** Instead of storing
-  stack traces, instructive keeps a 16-bit counter per byte of live compiled code, plus
-  a small header and the method's name. Space is reused as methods are unloaded. In a
-  test with heavy class churn, the storage settled at about 2 MB for about 800 KB of
-  live compiled code.
+  stack traces, instructive keeps a 16-bit counter per possible instruction start in
+  live compiled code (every 4 bytes on AArch64, every byte on x86), plus a small header
+  and the method's name. Space is reused as methods are unloaded. In a test with heavy
+  class churn on AArch64, the storage settled at about 950 KB for 1.2 MB of live
+  compiled code.
 - **Online use.** This is a similar view to what JMH's `perfasm` profiler gives you
   for a benchmark: hot regions of the generated assembly. JMH does that offline, for
   benchmarks, using external tools. instructive aims to provide it from inside a running
@@ -192,20 +193,28 @@ a single instruction, so continuous profiling should reset regularly.
 ## Building
 
 ```
-./gradlew build          # builds everything and runs the tests
+./gradlew build                  # builds everything and runs the tests
+scripts/test-linux.sh            # the same on Linux x86-64 and AArch64, in Docker
+DISTRO=alpine JDK=17 scripts/test-linux.sh arm64   # musl, JDK 17, AArch64
 ```
 
-Requires JDK 25 (used as the Gradle toolchain) and a C++17 compiler. The native
-library is packaged into the agent jar under `META-INF/native-libs/<os>-<arch>/`.
+Requires JDK 17 or newer and a C++17 compiler. The native library is packaged into the
+agent jar under `META-INF/native-libs/<os>-<arch>/`. CI tests on Ubuntu (glibc) and
+Alpine (musl), on JDK 17, 21 and 25, on x86-64 and AArch64. It publishes a jar with the
+Linux libraries for all four combinations of libc and architecture. macOS isn't
+published: build it locally.
 
 ## Status and limitations
 
-- **Platforms:** tested on macOS on Apple Silicon and on Linux x86-64 (Rocky Linux 9).
-  Linux on AArch64 and macOS on Intel haven't been tried.
+
+- **Platforms:** developed on macOS on Apple Silicon. Linux is tested on x86-64 and
+  AArch64, with glibc and musl, in Docker (`scripts/test-linux.sh`), both locally and in
+  CI. Locally on an Apple Silicon host the x86-64 runs are emulated; in CI they run on
+  x86 hardware.
 - **Disassembly** covers AArch64 (scalar; vector SIMD is only classified) and x86-64
   (APX, XOP and 3DNow! aren't decoded).
-- **JDK versions:** JDK 25 is required at runtime, because the classes are compiled
-  for it. The code cache layout comes from VMStructs, whose entries change between
-  releases. The reader is written to handle the differences in JDK 11, 17 and 21, but
-  has only been run on JDK 25. On macOS, older JDKs don't export the VMStructs symbols at all.
+- **JDK versions:** 17, 21 and 25 are tested. The code cache layout comes from
+  VMStructs, whose entries change between releases, and the reader handles the
+  differences between these versions. On macOS, JDKs before 25 don't export the
+  VMStructs symbols at all.
 - **Interpreted code** is counted, but not attributed to methods.

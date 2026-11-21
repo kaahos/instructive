@@ -85,16 +85,36 @@ class CodeCacheTest {
         // Stopped, so nothing changed while copying, and executable PCs all lie in the profile.
         assertEquals(hottest.total(), hottest.sampled());
         CharBuffer counts = hottest.counts();
-        assertEquals(hottest.profileLength(), counts.remaining());
+        int step = hottest.bytesPerCount();
+        assertEquals(hottest.profileLength(), counts.remaining() * step);
         long sampledOffsets = 0;
-        for (int offset = 0; offset < counts.limit(); offset++) {
-            assertEquals(hottest.count(offset), counts.get(offset));
-            sampledOffsets += counts.get(offset) > 0 ? 1 : 0;
+        for (int i = 0; i < counts.limit(); i++) {
+            assertEquals(hottest.count(i * step), counts.get(i));
+            sampledOffsets += counts.get(i) > 0 ? 1 : 0;
         }
         assertEquals(hottest.sampled(), sum(counts));
         // The loop dominates, so samples concentrate on a few instructions.
         long offsets = sampledOffsets;
         assertTrue(offsets > 0 && offsets < hottest.methodSize() / 2, () -> offsets + " sampled offsets");
+    }
+
+    @Test
+    void countsOnePerInstructionSlot() {
+        sample(() -> compiledLoop(300));
+        InstructionProfile hottest = hottest(COMPILED);
+        boolean aarch64 = System.getProperty("os.arch").equals("aarch64");
+        // Fixed 4-byte instructions on AArch64 need a count per 4 bytes only.
+        assertEquals(aarch64 ? 4 : 1, hottest.bytesPerCount());
+        assertEquals(0, hottest.profileLength() % hottest.bytesPerCount());
+        long aligned = 0;
+        for (int offset = 0; offset < hottest.profileLength(); offset++) {
+            if (offset % hottest.bytesPerCount() == 0) {
+                aligned += hottest.count(offset);
+            } else {
+                assertEquals(0, hottest.count(offset), "no instruction starts at +" + offset);
+            }
+        }
+        assertEquals(hottest.sampled(), aligned);
     }
 
     @Test

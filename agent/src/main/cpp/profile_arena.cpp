@@ -56,6 +56,7 @@ CompiledMethod* ProfileArena::allocate(size_t profile_length, size_t name_length
     std::atomic_thread_fence(std::memory_order_release);
     method->state.store(CompiledMethod::FREE, std::memory_order_relaxed);
     method->count.store(0, std::memory_order_relaxed);
+    method->pc_shift = CompiledMethod::PC_SHIFT;
     // A reused block keeps its size class, so a reader deriving the length from either
     // the old or the new lengths gets the same answer.
     method->lengths.store(lengths, std::memory_order_relaxed);

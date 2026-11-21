@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # The disassembler is plain Java: one quick job, and a gate for the expensive matrix.
+  parse:
+    name: parse (JDK 25)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v6
+      - run: ./gradlew :parse:test
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reports-parse
+          path: parse/build/reports/tests
+
+  # The agent on each libc, JDK and architecture, natively on runners of that
+  # architecture, in containers built from docker/linux-build.Dockerfile by the same
+  # script used locally.
+  agent-test:
+    name: agent-test (${{ matrix.distro }}, JDK ${{ matrix.jdk }}, ${{ matrix.arch }})
+    needs: parse
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [ubuntu, alpine] # glibc, musl
+        jdk: [17, 21, 25]
+        arch: [amd64, arm64]
+    env:
+      DISTRO: ${{ matrix.distro }}
+      JDK: ${{ matrix.jdk }}
+      OUT: ${{ github.workspace }}/out/native
+      REPORTS: ${{ github.workspace }}/out/reports
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test
+        run: scripts/test-linux.sh ${{ matrix.arch }} :agent-test:test
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reports-agent-test-${{ matrix.distro }}-jdk${{ matrix.jdk }}-${{ matrix.arch }}
+          path: out/reports
+      # The published library for each platform comes from its JDK 17 build: the oldest
+      # JNI and JVMTI headers, matching the JDK the jar is built with.
+      - name: Upload native library
+        if: matrix.jdk == 17
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.distro }}-${{ matrix.arch }}
+          path: out/native
+          if-no-files-found: error
+
+  # The agent jar, built with JDK 17 around the libraries the test matrix built and
+  # tested, under META-INF/native-libs/<platform>/ where the loader unpacks them from.
+  package:
+    name: package (JDK 17)
+    needs: agent-test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v6
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: native
+          merge-multiple: true
+      - name: Build jar
+        run: ./gradlew :agent:jvmJar -Pinstructive.buildNative=false "-Pinstructive.nativeLibs=$PWD/native"
+      - name: Check native libraries
+        run: |
+          jar=$(ls agent/build/libs/agent-*.jar)
+          for platform in linux-x86_64 linux-aarch64 linux-musl-x86_64 linux-musl-aarch64; do
+            unzip -l "$jar" | grep -q "META-INF/native-libs/$platform/libinstructive.so" \
+              || { echo "missing $platform in $jar"; exit 1; }
+          done
+          unzip -l "$jar" | grep native-libs/
+          if unzip -l "$jar" | grep -q '\.dylib'; then echo "unexpected .dylib in $jar"; exit 1; fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-jar
+          path: agent/build/libs/agent-*.jar
+          if-no-files-found: error

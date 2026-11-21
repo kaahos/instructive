@@ -21,11 +21,11 @@ namespace instructive {
 //   32 i32 compile_id      -1 if unknown
 //   36 u32 header_offset   code_begin - range_begin: the mapped range starts this far
 //                          before the instructions (the nmethod's header) and ends at
-//                          code_begin + profile_length (native only)
+//                          code_begin + (profile_length << pc_shift) (native only)
 //   40 u32 state           FREE, LIVE or RETIRED; a full word because it is CASed
 //   44 u16 code_size       bytes of instructions, saturated at UINT16_MAX
 //   46 i8  comp_level      -1 if unknown
-//   47 u8  reserved
+//   47 u8  pc_shift        log2 of the bytes each counter covers (PC_SHIFT)
 //   48 u16 pc_counts[profile_length], then name[name_length] and a NUL, then padding
 //      to 8 bytes
 //
@@ -34,11 +34,15 @@ namespace instructive {
 // same size class, and stays safe for a reader racing a reuse because both lengths
 // live in one word written atomically, so they are never seen from different records.
 //
-// pc_counts covers [code_begin, code_begin + profile_length): the instructions and
-// the stubs after them, one counter per byte because x86 instructions vary in length.
-// profile_length and code_size are 16 bits, so an nmethod is mapped and profiled for at
-// most 64 KiB from code_begin; samples beyond that count as stubs. Counters saturate at
-// MAX_PC_COUNT, about 11 minutes of samples at one PC at 10ms.
+// pc_counts covers [code_begin, code_begin + (profile_length << PC_SHIFT)): the
+// instructions and the stubs after them, with one counter per possible instruction
+// start. On AArch64 every instruction is 4 bytes and 4-byte aligned, so a counter covers
+// 4 bytes and the PC's offset is divided by 4; elsewhere (x86 instructions vary in
+// length) a counter covers one byte. profile_length and code_size are 16 bits, so an
+// nmethod is mapped and profiled for at most 65535 counters from code_begin (256 KiB of
+// code on AArch64, 64 KiB elsewhere), and its code size saturates at 65535 bytes;
+// samples beyond the profile count as stubs. Counters saturate at MAX_PC_COUNT, about
+// 11 minutes of samples at one PC at 10ms.
 //
 // state goes FREE -> LIVE when the method is inserted into the map, LIVE -> RETIRED
 // when a thread takes responsibility for unlinking and freeing it (retire()), and back
@@ -52,6 +56,11 @@ struct CompiledMethod {
     static constexpr size_t HEADER_SIZE = 48;
     static constexpr size_t ALIGNMENT = 8;
     static constexpr size_t MIN_BLOCK_SIZE = 128;
+#if defined(__aarch64__)
+    static constexpr int PC_SHIFT = 2;
+#else
+    static constexpr int PC_SHIFT = 0;
+#endif
 
     std::atomic<uint32_t> lengths;
     std::atomic<uint32_t> generation;
@@ -63,7 +72,7 @@ struct CompiledMethod {
     std::atomic<uint32_t> state;
     uint16_t code_size;
     int8_t comp_level;
-    uint8_t reserved;
+    uint8_t pc_shift;
 
     // The size of the block holding a record with these variable parts: header, counts,
     // name and NUL, padded to ALIGNMENT, then rounded up to a size class (four per power
@@ -89,7 +98,12 @@ struct CompiledMethod {
 
     uint64_t code_end() const { return code_begin + code_size; }
     uint64_t range_begin() const { return code_begin - header_offset; }
-    uint64_t range_end() const { return code_begin + profile_length(); }
+    uint64_t range_end() const { return code_begin + (uint64_t{profile_length()} << PC_SHIFT); }
+
+    // The number of counters needed to cover `bytes` of code from code_begin.
+    static size_t counters_for(size_t bytes) {
+        return (bytes + (size_t{1} << PC_SHIFT) - 1) >> PC_SHIFT;
+    }
 
     // Takes responsibility for unlinking and freeing a LIVE method: exactly one caller
     // gets true.
@@ -111,7 +125,7 @@ struct CompiledMethod {
     // Async-signal-safe.
     void record_sample(uintptr_t pc) {
         count.fetch_add(1, std::memory_order_relaxed);
-        uint64_t offset = pc - code_begin;
+        uint64_t offset = (pc - code_begin) >> PC_SHIFT;
         if (pc >= code_begin && offset < profile_length()) {
             std::atomic<uint16_t>& pc_count = pc_counts()[offset];
             uint16_t current = pc_count.load(std::memory_order_relaxed);
@@ -144,7 +158,7 @@ static_assert(offsetof(CompiledMethod, header_offset) == 36, "layout");
 static_assert(offsetof(CompiledMethod, state) == 40, "layout");
 static_assert(offsetof(CompiledMethod, code_size) == 44, "layout");
 static_assert(offsetof(CompiledMethod, comp_level) == 46, "layout");
-static_assert(offsetof(CompiledMethod, reserved) == 47, "layout");
+static_assert(offsetof(CompiledMethod, pc_shift) == 47, "layout");
 static_assert(sizeof(CompiledMethod) == CompiledMethod::HEADER_SIZE, "header size");
 static_assert(sizeof(std::atomic<uint16_t>) == 2 &&
                   sizeof(std::atomic<uint32_t>) == 4 && sizeof(std::atomic<uint64_t>) == 8,

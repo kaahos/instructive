@@ -55,12 +55,15 @@ import java.util.Optional;
  *  40 int   state          FREE (0), LIVE (1) or RETIRED (2, being unlinked)
  *  44 char  methodSize     bytes of instructions, saturated at 65535
  *  46 byte  compLevel      -1 if unknown
- *  47 byte  reserved
+ *  47 byte  pcShift        log2 of the bytes each count covers: 2 on AArch64, 0 elsewhere
  *  48 char  counts[profileLength], then the name and a NUL, then padding
  * </pre>
- * There is no stored record length: it is {@link #blockLength(int)} of the lengths word,
- * which must match the native {@code CompiledMethod::block_size}. Both lengths are 16
- * bits, so an nmethod is profiled for at most its first 65535 bytes. When a method is
+ * The lengths word holds the number of counts, each covering {@code 1 << pcShift} bytes
+ * of code: on AArch64 every instruction is 4 bytes and 4-byte aligned, so one count per
+ * instruction slot suffices. There is no stored record length: it is
+ * {@link #blockLength(int)} of the lengths word, which must match the native
+ * {@code CompiledMethod::block_size}. Both lengths are 16 bits, so an nmethod is
+ * profiled for at most its first 65535 counts. When a method is
  * unloaded its record becomes RETIRED, then FREE, and the block is later reused for
  * another method of the same size class, rewriting it under an odd generation.
  */
@@ -77,6 +80,7 @@ public final class InstructionProfile {
     static final int STATE = 40;
     static final int METHOD_SIZE = 44;
     static final int COMP_LEVEL = 46;
+    static final int PC_SHIFT = 47;
     static final int HEADER_SIZE = 48;
     static final int ALIGNMENT = 8;
     static final int MIN_BLOCK_SIZE = 128;
@@ -226,29 +230,54 @@ public final class InstructionProfile {
     }
 
     /**
-     * The number of per-PC counts: the instructions and the stubs after them, up to
-     * 65535 bytes from {@link #address()}.
+     * The number of bytes of code the per-PC counts cover, from {@link #address()}: the
+     * instructions and the stubs after them.
      */
     public int profileLength() {
-        return lengths() & 0xFFFF;
-    }
-
-    /** The samples taken with the PC at {@code offset} bytes from {@link #address()}. */
-    public char count(int offset) {
-        return buffer.getChar(position + HEADER_SIZE + offset * Character.BYTES);
+        return counters() << pcShift();
     }
 
     /**
-     * A view of the per-PC counts: {@code counts().get(offset)} is
-     * {@link #count(int) count(offset)}, for offsets in {@code [0, profileLength())}.
-     * For a profile passed to a {@code forEachMethod} consumer, it views the live
-     * counts, which keep changing while the sampler runs, and like the profile it may
-     * not be used after the consumer returns. For a snapshot, it views the copy.
-     * Allocates the view on each call.
+     * The bytes of code each count covers: 4 on AArch64, where every instruction is 4
+     * bytes, and 1 elsewhere.
+     */
+    public int bytesPerCount() {
+        return 1 << pcShift();
+    }
+
+    private int pcShift() {
+        return buffer.get(position + PC_SHIFT);
+    }
+
+    // The number of counts, as stored.
+    private int counters() {
+        return lengths() & 0xFFFF;
+    }
+
+    /**
+     * The samples taken with the PC at {@code offset} bytes from {@link #address()}: 0
+     * for offsets where no instruction can start (not a multiple of {@link #bytesPerCount()}).
+     */
+    public char count(int offset) {
+        int shift = pcShift();
+        if ((offset & ((1 << shift) - 1)) != 0) {
+            return 0;
+        }
+        return buffer.getChar(position + HEADER_SIZE + (offset >> shift) * Character.BYTES);
+    }
+
+    /**
+     * A view of the per-PC counts, one per possible instruction start:
+     * {@code counts().get(i)} is the count at byte offset {@code i * bytesPerCount()},
+     * that is {@link #count(int) count(i * bytesPerCount())}, for {@code i} in
+     * {@code [0, profileLength() / bytesPerCount())}. For a profile passed to a
+     * {@code forEachMethod} consumer, it views the live counts, which keep changing
+     * while the sampler runs, and like the profile it may not be used after the consumer
+     * returns. For a snapshot, it views the copy. Allocates the view on each call.
      */
     public CharBuffer counts() {
         // slice() resets the byte order, so set it before taking the char view.
-        return buffer.slice(position + HEADER_SIZE, profileLength() * Character.BYTES)
+        return buffer.slice(position + HEADER_SIZE, counters() * Character.BYTES)
                 .order(ByteOrder.nativeOrder())
                 .asCharBuffer();
     }
@@ -284,8 +313,9 @@ public final class InstructionProfile {
     /** The sum of the per-PC counts. */
     public long sampled() {
         long sum = 0;
-        for (int offset = 0, length = profileLength(); offset < length; offset++) {
-            sum += count(offset);
+        int counts = position + HEADER_SIZE;
+        for (int i = 0, length = counters(); i < length; i++) {
+            sum += buffer.getChar(counts + i * Character.BYTES);
         }
         return sum;
     }
@@ -311,7 +341,7 @@ public final class InstructionProfile {
      * decodes as U+FFFD.
      */
     public StringBuilder appendName(StringBuilder to) {
-        int start = position + HEADER_SIZE + profileLength() * Character.BYTES;
+        int start = position + HEADER_SIZE + counters() * Character.BYTES;
         int end = start + nameLength();
         for (int i = start; i < end; ) {
             int b = buffer.get(i) & 0xFF;

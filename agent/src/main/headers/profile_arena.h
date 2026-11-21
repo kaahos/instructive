@@ -25,7 +25,8 @@ namespace instructive {
 // CompiledMethodMap::synchronize).
 class ProfileArena {
 public:
-    static constexpr size_t DEFAULT_CAPACITY = size_t{512} << 20;
+    // Per-PC counters dominate the space, and on AArch64 there are a quarter as many.
+    static constexpr size_t DEFAULT_CAPACITY = (size_t{512} << 20) >> CompiledMethod::PC_SHIFT;
 
     explicit ProfileArena(size_t capacity = DEFAULT_CAPACITY);
     ~ProfileArena();

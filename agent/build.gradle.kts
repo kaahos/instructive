@@ -6,15 +6,8 @@ plugins {
     `java-base`
 }
 
-val javaHome: String = javaToolchains.launcherFor {
-    languageVersion = JavaLanguageVersion.of(25)
-}.get().metadata.installationPath.asFile.absolutePath
-
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
-    }
-}
+// JNI and JVMTI headers come from the JDK running Gradle.
+val javaHome: String = System.getProperty("java.home")
 
 val jvm = sourceSets.create("jvm") {
     java.setSrcDirs(listOf("src/main/java"))
@@ -40,6 +33,9 @@ tasks.withType<CppCompile>().configureEach {
     }
     includes.from("$javaHome/include", "$javaHome/include/$platformInclude")
     compilerArgs.add("-std=c++17")
+    // Export only what JNIEXPORT marks (the JNI entry points), not our internals or the
+    // templates instantiated in them.
+    compilerArgs.addAll("-fvisibility=hidden", "-fvisibility-inlines-hidden")
     if (os.isMacOsX) {
         // Gradle looks for libc++ headers in CommandLineTools/usr/include/c++/v1, which newer
         // Command Line Tools no longer ship; they live in the SDK. compilerArgs precede
@@ -48,16 +44,33 @@ tasks.withType<CppCompile>().configureEach {
     }
 }
 
-// timer_create lives in librt on glibc older than 2.34.
+val exportsMap = file("src/main/linker/exports.map")
+
 tasks.withType<LinkSharedLibrary>().configureEach {
     if (org.gradle.nativeplatform.platform.internal.DefaultNativePlatform.getCurrentOperatingSystem().isLinux) {
-        linkerArgs.add("-lrt")
+        linkerArgs.addAll(
+            // timer_create lives in librt on glibc older than 2.34.
+            "-lrt",
+            // Bundle the C++ runtime so the library loads on distros with an older one,
+            // and keep its symbols out of the dynamic symbol table so they can't clash
+            // with another copy loaded in the same process.
+            "-static-libstdc++",
+            "-static-libgcc",
+            "-Wl,--exclude-libs,ALL",
+            // Export only the JNI entry points; see the map for why visibility isn't enough.
+            "-Wl,--version-script=${exportsMap.absolutePath}",
+        )
+        inputs.file(exportsMap)
     }
 }
 
 // These must agree with NativeLibraryLoader.platform() on the Java side.
+// musl-based Linux (e.g. Alpine) needs its own build: a library linked against glibc
+// can't load there. It is recognised by musl's dynamic loader.
+fun isMusl(): Boolean = File("/lib").listFiles()?.any { it.name.startsWith("ld-musl-") } ?: false
+
 fun normaliseOperatingSystem(family: OperatingSystemFamily): String = when {
-    family.isLinux -> "linux"
+    family.isLinux -> if (isMusl()) "linux-musl" else "linux"
     family.isMacOs -> "macos"
     family.isWindows -> "windows"
     else -> error("Unsupported operating system: ${family.name}")
@@ -95,11 +108,18 @@ val externalNativeLibs: List<String> = providers.gradleProperty("instructive.nat
     .map { value -> value.split(',').map(String::trim).filter(String::isNotEmpty) }
     .getOrElse(emptyList())
 
+// Whether to build the host's native library and put it in the jar. CI packages the
+// jar from libraries built and tested on each platform instead, with
+// -Pinstructive.buildNative=false -Pinstructive.nativeLibs=<dir>.
+val buildNative: Boolean = providers.gradleProperty("instructive.buildNative").map(String::toBoolean).getOrElse(true)
+
 val jvmJar = tasks.register<Jar>("jvmJar") {
     archiveBaseName = "agent"
     from(jvm.output)
     // The locally built library wins over an external one for the same platform.
-    from(nativeLibs)
+    if (buildNative) {
+        from(nativeLibs)
+    }
     externalNativeLibs.forEach { from(it) }
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     manifest {

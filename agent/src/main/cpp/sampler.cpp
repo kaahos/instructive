@@ -143,8 +143,8 @@ void JNICALL Sampler::on_compiled_method_load(jvmtiEnv* jvmti, jmethodID method,
         }
     }
     std::string name = method_name(sampler->vm_, jvmti, method);
-    // Lengths are 16 bits. Names that long don't occur in practice; nmethods over 64 KiB
-    // can, and are mapped and profiled for their first 64 KiB only.
+    // Lengths are 16 bits. Names that long don't occur in practice; nmethods needing more
+    // counters can, and are mapped and profiled for as much as the counters cover.
     if (name.size() > CompiledMethod::MAX_LENGTH) {
         size_t cut = CompiledMethod::MAX_LENGTH;
         // Don't split a (modified) UTF-8 sequence: back up over continuation bytes.
@@ -153,7 +153,8 @@ void JNICALL Sampler::on_compiled_method_load(jvmtiEnv* jvmti, jmethodID method,
         }
         name.resize(cut);
     }
-    size_t profile_length = std::min<size_t>(range_end - code_begin, CompiledMethod::MAX_LENGTH);
+    size_t profile_length =
+        std::min<size_t>(CompiledMethod::counters_for(range_end - code_begin), CompiledMethod::MAX_LENGTH);
     CompiledMethod* compiled = sampler->arena_.allocate(profile_length, name.size());
     if (compiled == nullptr) {
         // The arena is full: the method's samples will count as Stub.
