@@ -47,9 +47,16 @@ class DisassemblyTest {
                 continue;
             }
             List<Instruction> instructions = disassembler.decodeAll(code, profile.address());
-            long decoded = instructions.stream().filter(Instruction::isDecoded).count();
-            // Compiled code is nearly all decodable; the rest is vector SIMD (on aarch64) or data.
-            assertTrue(decoded >= 0.95 * instructions.size(), () -> profile.name() + ": " + decoded + " of " + instructions.size());
+            // Compiled code is nearly all decodable. Vector SIMD on aarch64 is only
+            // classified, not decoded, and C2 can vectorise a lot of a method with it (SVE,
+            // on CPUs that have it), so it counts as recognised. The rest is data.
+            long recognised = instructions.stream()
+                    .filter(instruction -> instruction.isDecoded() || instruction.kind() == InstructionKind.SIMD)
+                    .count();
+            assertTrue(recognised >= 0.95 * instructions.size(), () -> profile.name() + ": " + recognised + " of "
+                    + instructions.size() + " recognised; not: " + instructions.stream()
+                            .filter(instruction -> !instruction.isDecoded() && instruction.kind() != InstructionKind.SIMD)
+                            .map(Instruction::toString).limit(20).toList());
             Map<Long, Instruction> byAddress = new TreeMap<>();
             instructions.forEach(instruction -> byAddress.put(instruction.address(), instruction));
             for (int offset = 0; offset < Math.min(code.length, profile.profileLength()); offset++) {
