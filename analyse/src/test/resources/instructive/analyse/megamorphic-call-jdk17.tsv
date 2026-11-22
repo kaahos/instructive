@@ -1,0 +1,82 @@
+# Calls.megamorphic([LCalls$Shape;)J: for (int i = 0; i < shapes.length; i++) sum += shapes[i].area(i), over 4 implementations of Shape at random
+# C2 on JDK 17, Linux aarch64, one second of samples, dispatch stub samples attributed to the call. Columns: bytes, samples, offset and disassembly.
+1f 20 03 d5	0	+0x000  nop
+e9 53 40 d1	0	+0x004  sub x9, sp, #0x14, lsl #12
+3f 01 00 f9	0	+0x008  str xzr, [x9]
+ff 03 01 d1	0	+0x00c  sub sp, sp, #0x40
+fd 7b 03 a9	0	+0x010  stp x29, x30, [sp, #0x30]
+ea 03 01 aa	0	+0x014  mov x10, x1
+2d 0c 40 b9	0	+0x018  ldr w13, [x1, #0xc]
+ab 05 00 51	0	+0x01c  sub w11, w13, #0x1
+bf 01 00 71	0	+0x020  cmp w13, #0x0
+49 04 00 54	0	+0x024  b.ls 0xac
+7f 01 0d 6b	0	+0x028  cmp w11, w13
+42 04 00 54	0	+0x02c  b.hs 0xb4
+eb 03 1f aa	0	+0x030  mov x11, xzr
+fd 03 1f 2a	0	+0x034  mov w29, wzr
+e1 03 00 f9	0	+0x038  str x1, [sp]
+ed 0b 00 b9	0	+0x03c  str w13, [sp, #0x8]
+eb 0b 00 f9	0	+0x040  str x11, [sp, #0x10]
+04 00 00 14	0	+0x044  b 0x54
+1f 20 03 d5	0	+0x048  nop
+1f 20 03 d5	0	+0x04c  nop
+eb 0b 00 f9	0	+0x050  str x11, [sp, #0x10]
+a2 7f 40 93	0	+0x054  sxtw x2, w29
+ea 03 40 f9	0	+0x058  ldr x10, [sp]
+4a 69 22 8b	0	+0x05c  add x10, x10, x2, uxtx #2
+4a 11 40 b9	0	+0x060  ldr w10, [x10, #0x10]
+41 fd 40 d3	0	+0x064  lsr x1, x10, #0
+09 bc 8b d2	0	+0x068  mov x9, #0x5de0
+09 83 b4 f2	0	+0x06c  movk x9, #0xa418, lsl #16
+e9 ff df f2	0	+0x070  movk x9, #0xffff, lsl #32
+03 49 ed 97	11	+0x074  bl 0xffffffffffb52480
+ea 0b 40 f9	0	+0x078  ldr x10, [sp, #0x10]
+4b 01 00 8b	0	+0x07c  add x11, x10, x0
+bd 07 00 11	0	+0x080  add w29, w29, #0x1
+ea 0b 40 b9	2	+0x084  ldr w10, [sp, #0x8]
+bf 03 0a 6b	0	+0x088  cmp w29, w10
+2b fe ff 54	0	+0x08c  b.lt 0x50
+e0 03 0b aa	0	+0x090  mov x0, x11
+fd 7b 43 a9	0	+0x094  ldp x29, x30, [sp, #0x30]
+ff 03 01 91	0	+0x098  add sp, sp, #0x40
+88 a3 41 f9	0	+0x09c  ldr x8, [x28, #0x340]
+ff 63 28 eb	0	+0x0a0  cmp sp, x8
+c8 01 00 54	0	+0x0a4  b.hi 0xdc
+c0 03 5f d6	0	+0x0a8  ret
+e0 03 1f aa	0	+0x0ac  mov x0, xzr
+f9 ff ff 17	0	+0x0b0  b 0x94
+21 11 80 12	0	+0x0b4  mov w1, #-0x8a
+fd 03 0a aa	0	+0x0b8  mov x29, x10
+ed 03 00 b9	0	+0x0bc  str w13, [sp]
+e0 59 ea 97	0	+0x0c0  bl 0xffffffffffa96840
+e1 03 00 aa	0	+0x0c4  mov x1, x0
+fd 7b 43 a9	0	+0x0c8  ldp x29, x30, [sp, #0x30]
+ff 03 01 91	0	+0x0cc  add sp, sp, #0x40
+0c 3d ed 17	0	+0x0d0  b 0xffffffffffb4f500
+21 01 80 12	0	+0x0d4  mov w1, #-0xa
+da 59 ea 97	0	+0x0d8  bl 0xffffffffffa96840
+08 fe ff 10	0	+0x0dc  adr x8, 0x9c
+88 af 01 f9	0	+0x0e0  str x8, [x28, #0x358]
+37 58 ea 17	0	+0x0e4  b 0xffffffffffa961c0
+00 00 00 00	0	+0x0e8  udf #0x0
+00 00 00 00	0	+0x0ec  udf #0x0
+00 00 00 00	0	+0x0f0  udf #0x0
+00 00 00 00	0	+0x0f4  udf #0x0
+00 00 00 00	0	+0x0f8  udf #0x0
+00 00 00 00	0	+0x0fc  udf #0x0
+48 00 00 58	0	+0x100  ldr x8, 0x108
+00 01 1f d6	0	+0x104  br x8
+c0 a4 83 94	0	+0x108  bl 0x20e9408
+ff ff 00 00	0	+0x10c  udf #0xffff
+48 00 00 58	0	+0x110  ldr x8, 0x118
+00 01 1f d6	0	+0x114  br x8
+80 e8 77 94	0	+0x118  bl 0x1dfa318
+ff ff 00 00	0	+0x11c  udf #0xffff
+48 00 00 58	0	+0x120  ldr x8, 0x128
+00 01 1f d6	0	+0x124  br x8
+80 e8 77 94	0	+0x128  bl 0x1dfa328
+ff ff 00 00	0	+0x12c  udf #0xffff
+64 e1 ea 17	0	+0x130  b 0xffffffffffab86c0
+1e 00 00 10	0	+0x134  adr x30, 0x134
+f2 58 ea 17	0	+0x138  b 0xffffffffffa96500
+00 00 00 00	0	+0x13c  udf #0x0

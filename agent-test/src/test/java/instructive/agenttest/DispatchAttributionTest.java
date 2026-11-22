@@ -91,16 +91,19 @@ class DispatchAttributionTest {
         InstructionProfile caller = hottest("DispatchAttributionTest.sumAreas(", sink);
         String report = describe(caller, kindCounts);
 
-        // The caller's hottest instruction is the call, holding the stub's samples.
-        int hottestOffset = -1;
-        for (int offset = 0; offset < caller.profileLength(); offset += caller.bytesPerCount()) {
-            if (hottestOffset < 0 || caller.count(offset) > caller.count(hottestOffset)) {
-                hottestOffset = offset;
+        // The call holds the stub's samples: a good share of the caller's, though not
+        // always the most (with ~13 samples, 8 once landed on the reload after the call).
+        byte[] code = caller.machineCode().orElseThrow();
+        long atCall = 0;
+        Instruction call = null;
+        for (Instruction instruction : disassembler.decodeAll(code, caller.address())) {
+            long count = caller.count((int) (instruction.address() - caller.address()));
+            if (instruction.kind() == InstructionKind.CALL && count > atCall) {
+                atCall = count;
+                call = instruction;
             }
         }
-        Instruction call = disassembler.decode(caller.machineCode().orElseThrow(), hottestOffset, caller.address() + hottestOffset);
-        assertEquals(InstructionKind.CALL, call.kind(), () -> call.text() + "\n" + report);
-        long atCall = caller.count(hottestOffset);
+        assertNotNull(call, report);
         assertTrue(atCall * 4 >= caller.sampled(), report);
         // Hardly anything is left counted as a stub.
         assertTrue(kindCounts.get(CodeKind.STUB) * 4 <= atCall, report);

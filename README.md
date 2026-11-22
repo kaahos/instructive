@@ -154,6 +154,7 @@ model and the samples per instruction, and returns its findings hottest first.
 | `FailedCheckRule` | explicit null checks that throw: nulls have been seen there | [Finding null checks that have failed](#finding-null-checks-that-have-failed) |
 | `FailedCheckRule` | explicit range checks that throw, or that a loop kept: out-of-bounds indexes have been seen there, or the loop isn't counted | [Finding range checks that have failed](#finding-range-checks-that-have-failed) |
 | `UnpredictableBranchRule` | hot loops branching on the data they load, whose samples land where mispredicted branches' would | [Finding unpredictable branches](#finding-unpredictable-branches) |
+| `MegamorphicCallRule` | virtual and interface calls dispatching through a vtable or itable stub, whose cost the agent attributes to the call | [Finding megamorphic calls](#finding-megamorphic-calls) |
 
 ## Finding long dependency chains
 
@@ -1229,6 +1230,53 @@ sorted values run equally fast, yet 40% of the random loop's samples still land 
 cases (6% sorted). How far samples skid past a stall also depends on the CPU, and these
 measurements are all from an Apple M2, so the threshold may need tuning on other
 machines.
+
+## Finding megamorphic calls
+
+A virtual or interface call whose call site has seen too many receiver types for C2 to
+inline goes through an inline cache to a vtable or itable stub, which looks the target up
+in the receiver's class and jumps to it indirectly. A profiler normally shows that time
+in an anonymous stub. The agent attributes samples taken in a dispatch stub to the call
+instruction that reached it (see "Virtual dispatch at the call site"), so the cost shows
+up at the call site.
+
+`sum += shapes[i].area(i)` over four implementations of `Shape` at random, C2 on JDK 17,
+Linux aarch64, one second of samples (decoded at address 0, so the stub's address is
+negative):
+
+```
++0x050  str x11, [sp, #0x10]
++0x054  sxtw x2, w29
++0x058  ldr x10, [sp]
++0x05c  add x10, x10, x2, uxtx #2
++0x060  ldr w10, [x10, #0x10]
++0x064  lsr x1, x10, #0
++0x068  mov x9, #0x5de0
++0x06c  movk x9, #0xa418, lsl #16
++0x070  movk x9, #0xffff, lsl #32
++0x074  bl 0xffffffffffb52480        11
++0x078  ldr x10, [sp, #0x10]
++0x07c  add x11, x10, x0
++0x080  add w29, w29, #0x1
++0x084  ldr w10, [sp, #0x8]          2
++0x088  cmp w29, w10
++0x08c  b.lt 0x50
+```
+
+`mov x9` and two `movk x9` load the inline cache's data into `x9`, and the `bl` calls the
+stub: 11 of the method's 13 samples are on it. With one receiver type (the callee kept out
+of line) C2 checks the class and calls the method directly, with no `x9` setup.
+
+### The rule
+
+`MegamorphicCallRule` reports a call preceded by moves of immediates into `x9` (HotSpot's
+inline cache register on AArch64) that has at least 10% of the method's samples; without
+samples, every inline cache call. An inline cache call that goes straight to one callee
+hardly ever has samples of its own, so the samples are what tell a megamorphic call
+apart. The finding gives the innermost loop, if any, and the samples on the call and in
+the loop. On JDK 17, 21 and 25 the call had 70-85% of its loop's samples. Part of the
+cost still lands in the callees, on the first instruction they execute after the
+mispredicted jump.
 
 ## Using it
 
