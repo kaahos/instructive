@@ -75,6 +75,15 @@ jobs:
         with:
           name: reports-agent-test-${{ matrix.distro }}-jdk${{ matrix.jdk }}-${{ matrix.arch }}
           path: out/reports
+      # Each test JVM's JIT log (also in the reports), on its own: what was compiled, at
+      # which tier and compile id, and what was made not entrant or flushed.
+      - name: Upload JIT logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jit-logs-${{ matrix.distro }}-jdk${{ matrix.jdk }}-${{ matrix.arch }}
+          path: out/reports/**/jit/*.log
+          if-no-files-found: ignore
       # The published library for each platform comes from its JDK 17 build: the oldest
       # JNI and JVMTI headers, matching the JDK the jar is built with.
       - name: Upload native library
