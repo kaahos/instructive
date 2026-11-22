@@ -2,17 +2,15 @@ package instructive.agenttest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import instructive.agent.InstructionProfile;
 import instructive.agent.Sampler;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -25,27 +23,11 @@ class MethodNamesTest {
 
     private static final List<String> KERNELS = List.of("twice(I)I", "twice(J)J", "thrice(I)I", "half(D)D");
 
-    // Calls the kernels until each is compiled: on a busy machine the compiler can take a
-    // while to get to them. They're kept out of line (dontinline in the build), so they
-    // are compiled as methods of their own and stay in use.
     @BeforeAll
     static void compile() {
-        long sink = 0;
-        long deadline = System.nanoTime() + 30_000_000_000L;
-        Set<String> compiled = new HashSet<>();
-        while (compiled.size() < KERNELS.size()) {
-            assertTrue(System.nanoTime() < deadline, () -> "not compiled after 30s: only " + compiled);
-            for (int i = 0; i < 20000; i++) {
-                sink += twice(i) + twice((long) i) + thrice(i) + (long) half(i);
-            }
-            Sampler.forEachMethod(profile -> {
-                String name = profile.name();
-                if (name.startsWith(CLASS) && KERNELS.contains(name.substring(CLASS.length()))) {
-                    compiled.add(name.substring(CLASS.length()));
-                }
-            });
+        for (String kernel : KERNELS) {
+            compiled(kernel);
         }
-        assertNotEquals(42, sink);
     }
 
     static int twice(int x) {
@@ -128,25 +110,60 @@ class MethodNamesTest {
     void snapshotsResolveTheirNames() {
         InstructionProfile[] snapshot = new InstructionProfile[1];
         String[] live = new String[1];
-        Sampler.forEachMethod(profile -> {
-            if (snapshot[0] == null && profile.name().equals(CLASS + "twice(I)I")) {
-                live[0] = profile.name();
-                snapshot[0] = profile.snapshot();
-            }
-        });
-        assertNotNull(snapshot[0]);
+        while (snapshot[0] == null) {
+            compiled("twice(I)I");
+            // Read the name and take the snapshot from the same live profile.
+            Sampler.forEachMethod(profile -> {
+                if (snapshot[0] == null && profile.name().equals(CLASS + "twice(I)I")) {
+                    live[0] = profile.name();
+                    snapshot[0] = profile.snapshot();
+                }
+            });
+        }
         assertEquals(live[0], snapshot[0].name());
         assertEquals(CLASS + "twice(I)I", snapshot[0].toString().substring("InstructionProfile[".length()).split(" ")[0]);
     }
 
     private static Codes codes(String method) {
-        Codes[] codes = new Codes[1];
+        return Codes.of(compiled(method));
+    }
+
+    // A snapshot of a compiled copy of the kernel `method`, calling the kernels until there
+    // is one. Not just once: a compiled copy can go between tests (a tier 3 copy is retired
+    // once its tier 4 copy is in, and JDK 17's sweeper flushes code that's gone cold), and
+    // on a busy machine the compiler can take a while to get to a kernel. They're kept out
+    // of line (dontinline in the build), so each is compiled as a method of its own.
+    private static InstructionProfile compiled(String method) {
+        long deadline = System.nanoTime() + 30_000_000_000L;
+        long sink = 0;
+        while (true) {
+            InstructionProfile[] found = new InstructionProfile[1];
+            Sampler.forEachMethod(profile -> {
+                if (found[0] == null && profile.name().equals(CLASS + method)) {
+                    found[0] = profile.snapshot();
+                }
+            });
+            if (found[0] != null) {
+                assertNotEquals(42, sink);
+                return found[0];
+            }
+            if (System.nanoTime() > deadline) {
+                fail(method + " isn't compiled after 30s; compiled copies of this class's methods: " + copies());
+            }
+            for (int i = 0; i < 20000; i++) {
+                sink += twice(i) + twice((long) i) + thrice(i) + (long) half(i);
+            }
+        }
+    }
+
+    private static String copies() {
+        List<String> copies = new ArrayList<>();
         Sampler.forEachMethod(profile -> {
-            if (codes[0] == null && profile.name().equals(CLASS + method)) {
-                codes[0] = Codes.of(profile);
+            if (profile.name().startsWith(CLASS)) {
+                copies.add(profile.name().substring(CLASS.length()) + " tier " + profile.compLevel() + " #" + profile.compileId()
+                        + (profile.isLive() ? "" : " (not live)"));
             }
         });
-        assertNotNull(codes[0], () -> method + " isn't compiled");
-        return codes[0];
+        return copies.isEmpty() ? "none" : String.join(", ", copies);
     }
 }

@@ -25,6 +25,21 @@ tasks.withType<Test>().configureEach {
     // The agent's native unit tests run wherever its integration tests do, CI included.
     dependsOn(":agent:nativeTest")
     inputs.files(agentJar)
+    // The JIT's log: what was compiled, at which tier and with which compile id, what was
+    // made not entrant, and (JDK 17's sweeper) flushed. One file per test JVM, with the
+    // test results, so CI's uploaded reports carry it when a job fails.
+    val jitLogs = reports.junitXml.outputLocation.dir("jit")
+    doFirst {
+        // Only this run's logs: they're named by process id.
+        jitLogs.get().asFile.deleteRecursively()
+        jitLogs.get().asFile.mkdirs()
+    }
+    // The sweeper that flushed cold and replaced code went in JDK 20, and its log tags
+    // with it. The tests run on the JDK running Gradle.
+    val sweeper = if (JavaVersion.current() < JavaVersion.VERSION_20) ",codecache+sweep=debug" else ""
+    jvmArgumentProviders.add(CommandLineArgumentProvider {
+        listOf("-Xlog:jit+compilation=debug,codecache=debug$sweeper:file=${jitLogs.get().asFile.absolutePath}/jit-%p.log:uptime,tid:filecount=0")
+    })
     jvmArgumentProviders.add(CommandLineArgumentProvider {
         listOf(
             "-javaagent:${agentJar.singleFile.absolutePath}",
