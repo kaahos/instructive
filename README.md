@@ -1215,6 +1215,14 @@ so the rule reports a loop at 25% or more (`DEFAULT_MINIMUM_LANDING_SHARE`). Cou
 the decision tree's own compares as landing, as a first version did, put a sorted chain
 on JDK 17 at 40%: the hash's samples skid onto the chain's first compare.
 
+That threshold is calibrated on M2 cores, and it doesn't carry over to every CPU. On a
+GitHub Actions arm64 runner, the same switch over random data puts 42% of its samples on
+the hash's first `eor` and only 19% on the cases, so the rule doesn't report it. Which
+instruction a timer sample blames for a pipeline refill depends on the core, so on other
+CPUs treat the structure the rule finds (the branches on loaded data, which is the same
+everywhere) as the finding, and the share as a hint. Sampling the CPU's branch-miss
+events would remove the guesswork, where the hardware and the OS allow it.
+
 The share shows that branches mispredict, not that it costs much. With three rounds of
 hashing instead of one, the hash's latency hides the mispredictions, so random and
 sorted values run equally fast, yet 40% of the random loop's samples still land on the

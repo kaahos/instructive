@@ -97,6 +97,22 @@ class UnpredictableBranchRuleTest {
     }
 
     @Test
+    void missesTheSwitchOnACpuThatBlamesTheHash() {
+        // The same switch over random data on a GitHub Actions arm64 runner: that CPU puts
+        // the samples on the hash (42% on its first eor) rather than on the cases, so 19%
+        // land on them and the loop isn't reported. The threshold is calibrated on M2
+        // cores; this records that it doesn't carry over to every CPU.
+        Listing method = Listing.load("switch-random-ci.tsv");
+        assertTrue(new UnpredictableBranchRule().apply(method.code(), registers, method::count).isEmpty());
+        UnpredictableBranches loop = new UnpredictableBranchRule(0.1, 0).apply(method.code(), registers, method::count).get(0);
+        assertEquals(19, loop.landingSamples());
+        assertEquals(99, loop.samples());
+        // The structure is found all the same: the decision tree, all on data[i].
+        assertEquals(List.of("b.ne", "b.ge", "cbnz", "b.eq"), loop.branches().stream().map(b -> b.branch().mnemonic()).toList());
+        assertTrue(loop.branches().stream().allMatch(b -> b.load().text().equals("ldr w12, [x12, #0x10]")));
+    }
+
+    @Test
     void flagsATwoWayIfElse() {
         // if (x < 1 << 19) a += x; else a -= x: C2 keeps the branch, 50/50 on random data.
         Listing method = Listing.load("if-else-two-way.tsv");

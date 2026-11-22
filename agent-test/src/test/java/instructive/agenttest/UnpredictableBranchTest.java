@@ -17,8 +17,6 @@ import instructive.parse.aarch64.Aarch64RegisterModel;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 import java.util.function.ToLongFunction;
@@ -27,9 +25,13 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 /**
- * Finds the mispredicting switch, and if/else chain, in a loop over random data, and not
- * the same code over the same data sorted, nor a conditional select. Each element also goes through a hash, carried from one
- * to the next, which dominates the loop's cost when the branches predict well.
+ * Profiles a switch and an if/else chain over random data, after a hash carried from one
+ * element to the next, and checks UnpredictableBranchRule finds their branches on the
+ * loaded data, and no branch in a conditional select. Whether the loop is reported also
+ * depends on how much of its profile lands on the paths the branches choose between,
+ * which depends on the CPU: the threshold is tested on recorded listings instead
+ * (UnpredictableBranchRuleTest), so this test checks the structure, which is the same
+ * everywhere, and leaves the threshold out.
  */
 class UnpredictableBranchTest {
     private static final int LENGTH = 1 << 16;
@@ -45,78 +47,36 @@ class UnpredictableBranchTest {
     }
 
     @Test
-    void flagsASwitchOverRandomData() {
+    void findsTheSwitchsBranchesOnLoadedData() {
         InstructionProfile profile = profile("dispatchRandom", random(), UnpredictableBranchTest::dispatchRandom);
-        List<UnpredictableBranches> loops = apply(profile);
+        List<UnpredictableBranches> loops = candidates(profile);
         String report = describe(profile, loops);
         assertEquals(1, loops.size(), report);
-        UnpredictableBranches loop = loops.get(0);
-        assertTrue(loop.landingShare() >= UnpredictableBranchRule.DEFAULT_MINIMUM_LANDING_SHARE, report);
-        // The switch's branches, all on the element loaded from the array.
-        assertTrue(loop.branches().size() >= 2, report);
-        assertTrue(loop.branches().stream().allMatch(b -> b.load().kind() == InstructionKind.LOAD), report);
-        assertTrue(loop.samples() * 10 >= profile.sampled() * 9, report);
+        // The switch's decision tree, every branch on the element loaded from the array.
+        assertTrue(loops.get(0).branches().size() >= 2, report);
+        assertTrue(loops.get(0).branches().stream().allMatch(b -> b.load().kind() == InstructionKind.LOAD), report);
+        assertTrue(loops.get(0).samples() * 10 >= profile.sampled() * 9, report);
     }
 
     @Test
-    void leavesTheSameSwitchOverSortedDataAlone() {
-        int[] data = random();
-        Integer[] boxed = Arrays.stream(data).boxed().toArray(Integer[]::new);
-        Arrays.sort(boxed, Comparator.comparingInt((Integer value) -> value & 3));
-        for (int i = 0; i < LENGTH; i++) {
-            data[i] = boxed[i];
-        }
-        InstructionProfile profile = profile("dispatchSorted", data, UnpredictableBranchTest::dispatchSorted);
-        List<UnpredictableBranches> loops = apply(profile);
-        assertTrue(loops.isEmpty(), describe(profile, loops));
-    }
-
-    @Test
-    void flagsAnIfElseChainOverRandomData() {
+    void findsTheChainsBranchesOnLoadedData() {
         InstructionProfile profile = profile("chainRandom", random(), UnpredictableBranchTest::chainRandom);
-        List<UnpredictableBranches> loops = apply(profile);
+        List<UnpredictableBranches> loops = candidates(profile);
         String report = describe(profile, loops);
         assertEquals(1, loops.size(), report);
+        // At least the chain's three conditions.
         assertTrue(loops.get(0).branches().size() >= 3, report);
         assertTrue(loops.get(0).branches().stream().allMatch(b -> b.load().kind() == InstructionKind.LOAD), report);
     }
 
     @Test
-    void leavesTheSameChainOverSortedDataAlone() {
-        int[] data = random();
-        Arrays.sort(data);
-        InstructionProfile profile = profile("chainSorted", data, UnpredictableBranchTest::chainSorted);
-        List<UnpredictableBranches> loops = apply(profile);
-        assertTrue(loops.isEmpty(), describe(profile, loops));
-    }
-
-    @Test
-    void leavesAConditionalSelectAlone() {
+    void findsNoBranchInAConditionalSelect() {
         InstructionProfile profile = profile("select", random(), UnpredictableBranchTest::select);
-        List<UnpredictableBranches> loops = apply(profile);
+        List<UnpredictableBranches> loops = candidates(profile);
         assertTrue(loops.isEmpty(), describe(profile, loops));
     }
 
     static long chainRandom(int[] data) {
-        long a = 0, b = 1, c = 2, d = 3, h = 0;
-        for (int i = 0; i < data.length; i++) {
-            int x = data[i];
-            h = (h ^ x) * 0x9E3779B97F4A7C15L;
-            h ^= h >>> 29;
-            if (x < 1 << 18) {
-                a += x * 3L;
-            } else if (x < 2 << 18) {
-                b ^= (long) x << 7;
-            } else if (x < 3 << 18) {
-                c -= x;
-            } else {
-                d = Long.rotateLeft(d, x);
-            }
-        }
-        return a + b + c + d + h;
-    }
-
-    static long chainSorted(int[] data) {
         long a = 0, b = 1, c = 2, d = 3, h = 0;
         for (int i = 0; i < data.length; i++) {
             int x = data[i];
@@ -164,22 +124,6 @@ class UnpredictableBranchTest {
         return a + b + c + d + h;
     }
 
-    static long dispatchSorted(int[] data) {
-        long a = 0, b = 1, c = 2, d = 3, h = 0;
-        for (int i = 0; i < data.length; i++) {
-            int x = data[i];
-            h = (h ^ x) * 0x9E3779B97F4A7C15L;
-            h ^= h >>> 29;
-            switch (x & 3) {
-                case 0 -> a += x * 3L;
-                case 1 -> b ^= (long) x << 7;
-                case 2 -> c -= x;
-                default -> d = Long.rotateLeft(d, x);
-            }
-        }
-        return a + b + c + d + h;
-    }
-
     private static int[] random() {
         int[] data = new int[LENGTH];
         Random random = new Random(1);
@@ -189,10 +133,12 @@ class UnpredictableBranchTest {
         return data;
     }
 
-    private static List<UnpredictableBranches> apply(InstructionProfile profile) {
+    // The hot loops with branches on loaded data, whatever share of their samples lands
+    // after those branches.
+    private static List<UnpredictableBranches> candidates(InstructionProfile profile) {
         List<Instruction> code = new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
-        return new UnpredictableBranchRule().apply(code, new Aarch64RegisterModel(),
-                instruction -> profile.count((int) (instruction.address() - profile.address())));
+        return new UnpredictableBranchRule(UnpredictableBranchRule.DEFAULT_MINIMUM_SHARE, 0).apply(code,
+                new Aarch64RegisterModel(), instruction -> profile.count((int) (instruction.address() - profile.address())));
     }
 
     // Compiles `kernel` on `data`, profiles it for a second and returns the profile of
