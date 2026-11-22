@@ -1,0 +1,106 @@
+# Calls.monomorphic([LCalls$Shape;)J: for (int i = 0; i < shapes.length; i++) sum += shapes[i].area(i), over one implementation of Shape, kept out of line
+# C2 on JDK 25, Linux aarch64, one second of samples, dispatch stub samples attributed to the call. Columns: bytes, samples, offset and disassembly.
+1f 20 03 d5	0	+0x000  nop
+e9 53 40 d1	0	+0x004  sub x9, sp, #0x14, lsl #12
+3f 01 00 f9	0	+0x008  str xzr, [x9]
+ff 03 01 d1	0	+0x00c  sub sp, sp, #0x40
+fd 7b 03 a9	0	+0x010  stp x29, x30, [sp, #0x30]
+48 0a 00 18	0	+0x014  ldr w8, 0x15c
+89 23 40 b9	0	+0x018  ldr w9, [x28, #0x20]
+1f 01 09 eb	0	+0x01c  cmp x8, x9
+41 09 00 54	0	+0x020  b.ne 0x148
+fd 03 01 aa	0	+0x024  mov x29, x1
+2d 0c 40 b9	0	+0x028  ldr w13, [x1, #0xc]
+aa 05 00 51	0	+0x02c  sub w10, w13, #0x1
+8d 05 00 34	0	+0x030  cbz w13, 0xe0
+5f 01 0d 6b	0	+0x034  cmp w10, w13
+82 05 00 54	0	+0x038  b.hs 0xe8
+f0 03 1f 2a	0	+0x03c  mov w16, wzr
+ee 03 1f aa	0	+0x040  mov x14, xzr
+1f 20 03 d5	0	+0x044  nop
+1f 20 03 d5	0	+0x048  nop
+1f 20 03 d5	0	+0x04c  nop
+02 7e 40 93	0	+0x050  sxtw x2, w16
+aa 6b 22 8b	0	+0x054  add x10, x29, x2, uxtx #2
+4b 11 40 b9	0	+0x058  ldr w11, [x10, #0x10]
+6a 09 40 b9	22	+0x05c  ldr w10, [x11, #0x8]
+8c 20 a0 d2	0	+0x060  mov x12, #0x1040000
+0c 00 88 f2	0	+0x064  movk x12, #0x4000
+5f 01 0c 6b	0	+0x068  cmp w10, w12
+c1 02 00 54	0	+0x06c  b.ne 0xc4
+e1 03 0b aa	0	+0x070  mov x1, x11
+f0 37 00 29	0	+0x074  stp w16, w13, [sp]
+ee 07 00 f9	0	+0x078  str x14, [sp, #0x8]
+f9 e0 ff 97	0	+0x07c  bl 0xffffffffffff8460
+1f 20 03 d5	0	+0x080  nop
+1f 2f 80 f2	0	+0x084  movk xzr, #0x178
+1f 00 80 f2	0	+0x088  movk xzr, #0x0
+eb 03 40 b9	0	+0x08c  ldr w11, [sp]
+ea 07 40 f9	0	+0x090  ldr x10, [sp, #0x8]
+70 05 00 11	0	+0x094  add w16, w11, #0x1
+4e 01 00 8b	0	+0x098  add x14, x10, x0
+ed 07 40 b9	25	+0x09c  ldr w13, [sp, #0x4]
+1f 02 0d 6b	0	+0x0a0  cmp w16, w13
+6b fd ff 54	3	+0x0a4  b.lt 0x50
+e0 03 0e aa	0	+0x0a8  mov x0, x14
+fd 7b 43 a9	0	+0x0ac  ldp x29, x30, [sp, #0x30]
+ff 03 01 91	0	+0x0b0  add sp, sp, #0x40
+88 17 40 f9	0	+0x0b4  ldr x8, [x28, #0x28]
+ff 63 28 eb	0	+0x0b8  cmp sp, x8
+08 04 00 54	0	+0x0bc  b.hi 0x13c
+c0 03 5f d6	0	+0x0c0  ret
+21 04 80 12	0	+0x0c4  mov w1, #-0x22
+f0 2f 00 29	0	+0x0c8  stp w16, w11, [sp]
+ee 8b 00 a9	0	+0x0cc  stp x14, x2, [sp, #0x8]
+7c 9e ed 97	0	+0x0d0  bl 0xffffffffffb67ac0
+1f 20 03 d5	0	+0x0d4  nop
+9f 39 80 f2	0	+0x0d8  movk xzr, #0x1cc
+1f 20 80 f2	0	+0x0dc  movk xzr, #0x100
+e0 03 1f aa	0	+0x0e0  mov x0, xzr
+f2 ff ff 17	0	+0x0e4  b 0xac
+21 12 80 12	0	+0x0e8  mov w1, #-0x92
+ed 03 00 b9	0	+0x0ec  str w13, [sp]
+74 9e ed 97	0	+0x0f0  bl 0xffffffffffb67ac0
+1f 20 03 d5	0	+0x0f4  nop
+9f 3d 80 f2	0	+0x0f8  movk xzr, #0x1ec
+1f 40 80 f2	0	+0x0fc  movk xzr, #0x200
+e1 03 00 aa	0	+0x100  mov x1, x0
+fd 7b 43 a9	0	+0x104  ldp x29, x30, [sp, #0x30]
+ff 03 01 91	0	+0x108  add sp, sp, #0x40
+5d af ed 17	0	+0x10c  b 0xffffffffffb6be80
+21 01 80 12	0	+0x110  mov w1, #-0xa
+fd 03 02 aa	0	+0x114  mov x29, x2
+6a 9e ed 97	0	+0x118  bl 0xffffffffffb67ac0
+1f 20 03 d5	0	+0x11c  nop
+9f 42 80 f2	0	+0x120  movk xzr, #0x214
+1f 60 80 f2	0	+0x124  movk xzr, #0x300
+21 01 80 12	0	+0x128  mov w1, #-0xa
+65 9e ed 97	0	+0x12c  bl 0xffffffffffb67ac0
+1f 20 03 d5	0	+0x130  nop
+1f 45 80 f2	0	+0x134  movk xzr, #0x228
+1f 80 80 f2	0	+0x138  movk xzr, #0x400
+c8 fb ff 10	0	+0x13c  adr x8, 0xb4
+88 a3 02 f9	0	+0x140  str x8, [x28, #0x540]
+af 43 ea 17	0	+0x144  b 0xffffffffffa91000
+08 30 88 d2	0	+0x148  mov x8, #0x4180
+08 f4 ae f2	0	+0x14c  movk x8, #0x77a0, lsl #16
+e8 ff df f2	0	+0x150  movk x8, #0xffff, lsl #32
+00 01 3f d6	0	+0x154  blr x8
+b3 ff ff 17	0	+0x158  b 0x24
+01 00 00 00	0	+0x15c  udf #0x1
+48 00 00 58	0	+0x160  ldr x8, 0x168
+00 01 1f d6	0	+0x164  br x8
+e0 40 f6 77	0	+0x168  .word 0x77f640e0
+ff ff 00 00	0	+0x16c  udf #0xffff
+df 3f 03 d5	0	+0x170  isb
+0c 00 80 d2	0	+0x174  mov x12, #0x0
+0c 00 a0 f2	0	+0x178  movk x12, #0x0, lsl #16
+0c 00 c0 f2	0	+0x17c  movk x12, #0x0, lsl #32
+08 00 80 d2	0	+0x180  mov x8, #0x0
+08 00 a0 f2	0	+0x184  movk x8, #0x0, lsl #16
+08 00 c0 f2	0	+0x188  movk x8, #0x0, lsl #32
+00 01 1f d6	0	+0x18c  br x8
+ac 9e ed 17	0	+0x190  b 0xffffffffffb67c40
+1e 00 00 10	0	+0x194  adr x30, 0x194
+1a 44 ea 17	0	+0x198  b 0xffffffffffa91200
+00 00 00 00	0	+0x19c  udf #0x0

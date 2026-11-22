@@ -62,6 +62,12 @@ tasks.withType<Test>().configureEach {
             "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::dispatchRandom",
             "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::chainRandom",
             "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::select",
+            // MegamorphicCallTest's loops, each a method of its own, and the one receiver
+            // type's method kept out of line, so its loop has a call to look at.
+            "-XX:CompileCommand=dontinline,instructive.agenttest.MegamorphicCallTest::sum*",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.MegamorphicCallTest\$Square::area",
+            // DispatchAttributionTest profiles the loop as a method of its own.
+            "-XX:CompileCommand=dontinline,instructive.agenttest.DispatchAttributionTest::sumAreas",
             // MethodNamesTest looks for these as compiled methods of their own.
             "-XX:CompileCommand=dontinline,instructive.agenttest.MethodNamesTest::twice",
             "-XX:CompileCommand=dontinline,instructive.agenttest.MethodNamesTest::thrice",

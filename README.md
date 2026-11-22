@@ -154,6 +154,7 @@ model and the samples per instruction, and returns its findings hottest first.
 | `FailedCheckRule` | explicit null checks that throw: nulls have been seen there | [Finding null checks that have failed](#finding-null-checks-that-have-failed) |
 | `FailedCheckRule` | explicit range checks that throw, or that a loop kept: out-of-bounds indexes have been seen there, or the loop isn't counted | [Finding range checks that have failed](#finding-range-checks-that-have-failed) |
 | `UnpredictableBranchRule` | hot loops branching on the data they load, whose samples land where mispredicted branches' would | [Finding unpredictable branches](#finding-unpredictable-branches) |
+| `MegamorphicCallRule` | virtual and interface calls dispatching through a vtable or itable stub, whose cost the agent attributes to the call | [Finding megamorphic calls](#finding-megamorphic-calls) |
 
 ## Finding long dependency chains
 
@@ -1230,6 +1231,117 @@ cases (6% sorted). How far samples skid past a stall also depends on the CPU, an
 measurements are all from an Apple M2, so the threshold may need tuning on other
 machines.
 
+## Finding megamorphic calls
+
+A virtual or interface call is cheap while its call site sees one or two receiver types:
+C2 inlines the targets behind a check of the receiver's class. With more, C2 calls through
+an *inline cache* that ends up at a vtable or itable stub, which looks the target up in
+the receiver's class on every call and jumps to it indirectly. That jump goes somewhere
+different each time, so it is often mispredicted.
+
+A sampling profiler sees the stub, and a stub doesn't say which call reached it. The agent
+does (see [How it works](#how-it-works)): it learns the stubs' addresses from JVMTI, and a
+sample taken in one is attributed to the call instruction in the method that called it, so
+the cost of the dispatch shows up at the call site in your code.
+
+### An interface call over four types
+
+```java
+interface Shape { long area(long x); }
+// four final implementations: x * 3, x ^ 0x5555, x + 17, Long.rotateLeft(x, 5)
+
+static long sum(Shape[] shapes) {
+    long sum = 0;
+    for (int i = 0; i < shapes.length; i++) {
+        sum += shapes[i].area(i);
+    }
+    return sum;
+}
+```
+
+Over 16,384 shapes drawn at random from one, two or all four of the types, with `sum` kept
+out of line:
+
+| receiver types | JDK 17 (Linux) | JDK 21 (Linux) | JDK 25 (Linux) | JDK 25 (macOS) |
+|---|---|---|---|---|
+| 1 | 0.41 ns/call | 0.41 | 0.41 | 0.40 |
+| 2 | 1.01 ns/call | 0.60 | 1.59 | 2.19 |
+| 4 | 12.06 ns/call | 12.09 | 11.45 | 11.87 |
+
+With one or two types the call is inlined, and `sum` has all the samples. With four, the
+time goes to the dispatch and the callees. Without the attribution, a second of samples
+on JDK 25 (Linux) put 3 in `sum`, 7 in stubs and 89 in the four `area` methods: nothing
+says which loop the stubs' 7 belong to. With it, there are none left in stubs, and `sum`
+has 12:
+
+```
+Virtual.sum([LVirtual$Shape;)J
+  tier 4 (C2), compile id 331, 344 bytes at 0x0000ffff93f64540, 12 samples
+
+  pc                  bytes        instruction                        count        %
+  ...
+  0x0000ffff93f645a0  ea 0b 00 f9  str x10, [sp, #0x10]
+  0x0000ffff93f645a4  a2 7f 40 93  sxtw x2, w29
+  0x0000ffff93f645a8  ea 03 40 f9  ldr x10, [sp]
+  0x0000ffff93f645ac  4a 69 22 8b  add x10, x10, x2, uxtx #2
+  0x0000ffff93f645b0  4b 11 40 b9  ldr w11, [x10, #0x10]
+  0x0000ffff93f645b4  e1 03 0b aa  mov x1, x11
+  0x0000ffff93f645b8  09 f4 89 d2  mov x9, #0x4fa0
+  0x0000ffff93f645bc  09 80 a4 f2  movk x9, #0x2400, lsl #16
+  0x0000ffff93f645c0  e9 ff df f2  movk x9, #0xffff, lsl #32
+  0x0000ffff93f645c4  65 d5 ed 97  bl 0xffff93ad9b58                      9   75.00%
+  0x0000ffff93f645c8  1f 20 03 d5  nop
+  0x0000ffff93f645cc  1f 30 80 f2  movk xzr, #0x180
+  0x0000ffff93f645d0  1f 00 80 f2  movk xzr, #0x0
+  0x0000ffff93f645d4  ea 0b 40 f9  ldr x10, [sp, #0x10]
+  0x0000ffff93f645d8  bd 07 00 11  add w29, w29, #0x1
+  0x0000ffff93f645dc  4a 01 00 8b  add x10, x10, x0
+  0x0000ffff93f645e0  eb 0b 40 b9  ldr w11, [sp, #0x8]                    3   25.00%
+  0x0000ffff93f645e4  bf 03 0b 6b  cmp w29, w11
+  0x0000ffff93f645e8  cb fd ff 54  b.lt 0xffff93f645a0 <+0x60>
+  ...
+```
+
+Each iteration loads `shapes[i]` (`+0x70`), loads the inline cache's data into `x9`
+(`mov` and two `movk`s), and calls the stub with the `bl` at `+0x84`, which has 9 of the
+12 samples. The `nop` and `movk xzr` after it aren't executed; they record the call
+site's metadata. The sum and the length live on the stack across the call
+(`str x10, [sp, #0x10]` before, the `ldr`s after), since a call can overwrite every
+register that isn't saved.
+
+Not all of the dispatch's cost moves to the call. Each `area` method has most of its
+samples on the first instruction the stub jumps to (on macOS, 12 of `A.area`'s 14, with
+none on the `add` that does its work): that is where the CPU resumes after the mispredicted jump.
+
+### The rule
+
+`MegamorphicCallRule` finds inline cache calls: a call straight after moves of immediates
+into `x9`, the register HotSpot passes the cache's data in on AArch64. With one receiver
+type (and the callee kept out of line) C2 checks the class and calls the method directly,
+with no `x9` setup, and a static call has none either. An inline cache call can still go
+straight to one callee, which checks the receiver's class at its entry; then the call
+instruction hardly ever has samples of its own, since the callee's time is the callee's.
+So a call is reported when it has at least 10% of the method's samples, which only the
+stub's attributed samples give it (without samples, every inline cache call is
+reported). For the profile above:
+
+```java
+List<Instruction> code = new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
+List<MegamorphicCall> calls = new MegamorphicCallRule().apply(
+        code, new Aarch64RegisterModel(), i -> profile.count((int) (i.address() - profile.address())));
+MegamorphicCall call = calls.get(0);
+call.call();         // bl at +0x84
+call.setup();        // mov x9, #0x4fa0; movk x9, #0x2400, lsl #16; movk x9, #0xffff, lsl #32
+call.loopHeader();   // +0x64, where C2 enters its rotated loop
+call.samples();      // 9, the dispatch's
+call.loopSamples();  // 12
+```
+
+On JDK 17, 21 and 25 the call had 70-85% of its loop's samples (11 of 13, 7 of 10, 15 of
+18 in the recorded listings). The loops over one and two types have no finding. The rule
+reports calls outside loops too, with `loopHeader` -1: a hot megamorphic call matters
+wherever the loop driving it is.
+
 ## Using it
 
 Load the native library, either with the Java agent (`-javaagent:agent.jar`) or by
@@ -1270,6 +1382,16 @@ a single instruction, so continuous profiling should reset regularly.
   method. Its leaf records are 64 bytes each: the compile tier and id, a total sample
   count and where the method's per-PC counters are. The handler looks the PC up there,
   without locks or allocation. Freed records are reclaimed safely using epochs.
+- **Virtual dispatch at the call site:** a call that has seen too many receiver types
+  to inline goes through a vtable or itable stub, and a profiler usually shows the time
+  spent there as a stub, with no way to tell which call it belongs to. The agent learns
+  the stubs' addresses from JVMTI, and attributes a sample taken in one to the call
+  instruction that reached it, in the calling method: the stub builds no frame, so the
+  return address is still in the link register (or on top of the stack). The cost of the
+  dispatch shows up where it was paid for, at the call in the user's code. A loop calling
+  an interface method on four types of receiver: before, 2 of its 92 samples were in the
+  loop and 19 in stubs; with the attribution, 21 of its samples are on the `bl`, and none
+  are left in stubs.
 - **Counters only for sampled methods:** most compiled methods are never sampled, so a
   method's per-PC counters are claimed from a separate region on its first sample, by
   the signal handler, with a compare-and-swap, and all of them are released when

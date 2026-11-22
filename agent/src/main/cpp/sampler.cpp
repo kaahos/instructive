@@ -61,6 +61,7 @@ bool Sampler::enable_method_tracking() {
     std::memset(&callbacks, 0, sizeof(callbacks));
     callbacks.CompiledMethodLoad = &Sampler::on_compiled_method_load;
     callbacks.CompiledMethodUnload = &Sampler::on_compiled_method_unload;
+    callbacks.DynamicCodeGenerated = &Sampler::on_dynamic_code_generated;
     callbacks.ThreadStart = &Sampler::on_thread_start;
     callbacks.ThreadEnd = &Sampler::on_thread_end;
     if (jvmti_->SetEventCallbacks(&callbacks, sizeof(callbacks)) != JVMTI_ERROR_NONE) {
@@ -77,6 +78,12 @@ bool Sampler::enable_method_tracking() {
         jvmti_->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_COMPILED_METHOD_UNLOAD, nullptr) !=
             JVMTI_ERROR_NONE) {
         return false;
+    }
+    // Dispatch stubs, so their samples can be attributed to the calls that reach them.
+    // Without them, those samples just count as stubs.
+    if (jvmti_->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_DYNAMIC_CODE_GENERATED, nullptr) ==
+        JVMTI_ERROR_NONE) {
+        jvmti_->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
     }
     // Replay methods compiled before the events were enabled. Races with live events
     // only produce duplicates, which the map discards.
@@ -188,6 +195,23 @@ void JNICALL Sampler::on_compiled_method_unload(jvmtiEnv* jvmti, jmethodID metho
     }
 }
 
+// HotSpot posts vtable and itable stubs from its service thread, not while generating
+// them, so this may wait for signal handlers before freeing the table it replaced.
+void JNICALL Sampler::on_dynamic_code_generated(jvmtiEnv* jvmti, const char* name, const void* address,
+                                                jint length) {
+    Sampler* sampler = instance.load(std::memory_order_acquire);
+    if (sampler == nullptr || length <= 0 || !DispatchStubs::is_dispatch_stub(name)) {
+        return;
+    }
+    DispatchStubs::Ranges* replaced =
+        sampler->dispatch_stubs_.add(reinterpret_cast<uintptr_t>(address), static_cast<size_t>(length));
+    if (replaced != nullptr) {
+        // A signal handler may still be searching it, under a ReadGuard.
+        sampler->compiled_methods_->synchronize();
+        DispatchStubs::release(replaced);
+    }
+}
+
 // Both run on the thread that is starting or ending.
 void JNICALL Sampler::on_thread_start(jvmtiEnv* jvmti, JNIEnv* env, jthread thread) {
     Sampler* sampler = instance.load(std::memory_order_acquire);
@@ -213,6 +237,17 @@ void Sampler::on_tick(siginfo_t* info, void* ucontext) {
     {
         CompiledMethodMap::ReadGuard guard(*sampler->compiled_methods_);
         CompiledMethod* method = sampler->compiled_methods_->lookup(pc);
+        if (method == nullptr && sampler->dispatch_stubs_.contains(pc)) {
+            // A vtable or itable stub builds no frame: the caller's return address is
+            // still in the link register (or on top of the stack), just after the call.
+            // Attribute the sample to that call, if it's in a compiled method.
+            uintptr_t call = return_address_from_ucontext(ucontext) - CALL_LENGTH;
+            CompiledMethod* caller = sampler->compiled_methods_->lookup(call);
+            if (caller != nullptr && call >= caller->code_begin && call < caller->code_end()) {
+                pc = call;
+                method = caller;
+            }
+        }
         if (method != nullptr) {
             // While counters are being reset, a sample is dropped rather than counted in
             // the total alone, so totals and per-PC counts always agree.

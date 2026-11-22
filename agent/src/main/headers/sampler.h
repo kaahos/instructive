@@ -11,6 +11,7 @@
 #include "code_cache.h"
 #include "compiled_method_map.h"
 #include "counter_arena.h"
+#include "dispatch_stubs.h"
 #include "cpu_timer.h"
 #include "profile_arena.h"
 #include "string_dictionary.h"
@@ -25,10 +26,12 @@ namespace instructive {
 // Compiled methods are tracked from JVMTI CompiledMethodLoad/Unload events in a
 // CompiledMethodMap, maintained on ordinary threads. On each CPU timer tick the signal
 // handler looks the interrupted PC up in that map and bumps the method's count and the
-// count for the PC's offset within the method (CompiledMethod::record_sample). It
-// never reads the code heap or method metadata, which can change or be freed under a
-// signal handler; PCs not in the map are classified with CodeCache::classify, which
-// only uses bounds fixed at startup. Only one Sampler may exist at a time because the
+// count for the PC's offset within the method (CompiledMethod::record_sample). A PC in
+// a vtable or itable stub (DispatchStubs) is attributed to the call that reached the
+// stub, in the calling compiled method: the cost of virtual dispatch belongs to the call
+// site in the user's code. It never reads the code heap or method metadata, which can
+// change or be freed under a signal handler; other PCs not in the map are classified
+// with CodeCache::classify, which only uses bounds fixed at startup. Only one Sampler may exist at a time because the
 // signal handler and JVMTI callbacks reach it through a global.
 class Sampler {
 public:
@@ -96,6 +99,7 @@ private:
                                                 const void* code_addr, jint map_length,
                                                 const jvmtiAddrLocationMap* map, const void* compile_info);
     static void JNICALL on_compiled_method_unload(jvmtiEnv* jvmti, jmethodID method, const void* code_addr);
+    static void JNICALL on_dynamic_code_generated(jvmtiEnv* jvmti, const char* name, const void* address, jint length);
     static void JNICALL on_thread_start(jvmtiEnv* jvmti, JNIEnv* env, jthread thread);
     static void JNICALL on_thread_end(jvmtiEnv* jvmti, JNIEnv* env, jthread thread);
 
@@ -110,6 +114,8 @@ private:
     // Declared before the map, which returns records to it.
     ProfileArena arena_;
     CounterArena counters_;
+    // vtable and itable stubs, whose samples are attributed to the call that reached them.
+    DispatchStubs dispatch_stubs_;
     // Serialises reset_counts().
     std::mutex reset_lock_;
     // Records refer to these by code; strings are never removed, so codes in records
