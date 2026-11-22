@@ -44,6 +44,9 @@ tasks.withType<Test>().configureEach {
             "-XX:CompileCommand=dontinline,instructive.agenttest.NotUnrolledLoopTest::*",
             "-XX:CompileCommand=dontinline,instructive.agenttest.PointerChasingTest::sum*",
             "-XX:CompileCommand=dontinline,instructive.agenttest.FailedCheckTest::sum*",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::dispatch*",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::chain*",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::select",
         )
     })
 }

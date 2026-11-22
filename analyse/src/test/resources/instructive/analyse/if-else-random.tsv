@@ -1,0 +1,170 @@
+# for (x : data) { h = (h ^ x) * K; h ^= h >>> 29; if (x < 1 << 18) ... else if (x < 2 << 18) ... else if (x < 3 << 18) ... else ... } over random values
+# C2 on JDK 25, macOS aarch64 (Apple M2), one second of samples. Columns: bytes, samples, offset and disassembly.
+1f 20 03 d5	0	+0x000  nop
+e9 53 40 d1	0	+0x004  sub x9, sp, #0x14, lsl #12
+3f 01 00 f9	0	+0x008  str xzr, [x9]
+ff c3 00 d1	0	+0x00c  sub sp, sp, #0x30
+fd 7b 02 a9	0	+0x010  stp x29, x30, [sp, #0x20]
+68 14 00 18	0	+0x014  ldr w8, 0x1172adde0
+89 23 40 b9	0	+0x018  ldr w9, [x28, #0x20]
+1f 01 09 eb	0	+0x01c  cmp x8, x9
+61 13 00 54	0	+0x020  b.ne 0x1172addcc <+0x28c>
+ee 03 01 aa	0	+0x024  mov x14, x1
+2a 0c 40 b9	0	+0x028  ldr w10, [x1, #0xc]
+51 05 00 51	0	+0x02c  sub w17, w10, #0x1
+ca 10 00 34	0	+0x030  cbz w10, 0x1172add88 <+0x248>
+3f 02 0a 6b	0	+0x034  cmp w17, w10
+c2 10 00 54	0	+0x038  b.hs 0x1172add90 <+0x250>
+2b 10 40 b9	0	+0x03c  ldr w11, [x1, #0x10]
+6c 7d 40 93	0	+0x040  sxtw x12, w11
+a2 82 8f d2	0	+0x044  mov x2, #0x7c15
+42 e9 af f2	0	+0x048  movk x2, #0x7f4a, lsl #16
+22 37 cf f2	0	+0x04c  movk x2, #0x79b9, lsl #32
+e2 c6 f3 f2	0	+0x050  movk x2, #0x9e37, lsl #48
+8d 7d 02 9b	0	+0x054  mul x13, x12, x2
+f0 03 00 32	0	+0x058  orr w16, wzr, #0x1
+af fd 5d d3	0	+0x05c  lsr x15, x13, #29
+e6 03 40 b2	0	+0x060  orr x6, xzr, #0x1
+e3 03 7f b2	0	+0x064  orr x3, xzr, #0x2
+e4 07 40 b2	0	+0x068  orr x4, xzr, #0x3
+7f 01 41 71	0	+0x06c  cmp w11, #0x40, lsl #12
+6a 00 00 54	0	+0x070  b.ge 0x1172adbbc <+0x7c>
+85 05 0c 8b	0	+0x074  add x5, x12, x12, lsl #1
+0d 00 00 14	0	+0x078  b 0x1172adbec <+0xac>
+e5 03 1f aa	0	+0x07c  mov x5, xzr
+7f 01 42 71	0	+0x080  cmp w11, #0x80, lsl #12
+8a 00 00 54	0	+0x084  b.ge 0x1172adbd4 <+0x94>
+8b e1 79 d3	0	+0x088  lsl x11, x12, #7
+66 01 40 d2	0	+0x08c  eor x6, x11, #0x1
+07 00 00 14	0	+0x090  b 0x1172adbec <+0xac>
+7f 01 43 71	0	+0x094  cmp w11, #0xc0, lsl #12
+8b 00 00 54	0	+0x098  b.lt 0x1172adbe8 <+0xa8>
+e8 03 0b 4b	0	+0x09c  neg w8, w11
+84 2c c8 9a	0	+0x0a0  ror x4, x4, x8
+02 00 00 14	0	+0x0a4  b 0x1172adbec <+0xac>
+63 00 0c cb	0	+0x0a8  sub x3, x3, x12
+e1 01 0d ca	0	+0x0ac  eor x1, x15, x13
+3f 06 00 71	0	+0x0b0  cmp w17, #0x1
+ed 07 00 54	0	+0x0b4  b.le 0x1172adcf0 <+0x1b0>
+0b fa 80 52	0	+0x0b8  mov w11, #0x7d0
+35 00 00 14	0	+0x0bc  b 0x1172adcd0 <+0x190>
+e8 03 0f 4b	5	+0x0c0  neg w8, w15
+84 2c c8 9a	0	+0x0c4  ror x4, x4, x8
+10 0a 00 11	4	+0x0c8  add w16, w16, #0x2
+61 02 01 ca	0	+0x0cc  eor x1, x19, x1
+1f 02 0d 6b	0	+0x0d0  cmp w16, w13
+6a 05 00 54	0	+0x0d4  b.ge 0x1172adcc0 <+0x180>
+cf c9 30 8b	0	+0x0d8  add x15, x14, w16, sxtw #2
+ec 11 40 b9	0	+0x0dc  ldr w12, [x15, #0x10]
+80 7d 40 93	0	+0x0e0  sxtw x0, w12
+21 00 00 ca	0	+0x0e4  eor x1, x1, x0
+21 7c 02 9b	0	+0x0e8  mul x1, x1, x2
+ef 15 40 b9	0	+0x0ec  ldr w15, [x15, #0x14]
+27 fc 5d d3	0	+0x0f0  lsr x7, x1, #29
+e1 00 01 ca	0	+0x0f4  eor x1, x7, x1
+e7 7d 40 93	0	+0x0f8  sxtw x7, w15
+21 00 07 ca	0	+0x0fc  eor x1, x1, x7
+21 7c 02 9b	0	+0x100  mul x1, x1, x2
+33 fc 5d d3	0	+0x104  lsr x19, x1, #29
+9f 01 41 71	26	+0x108  cmp w12, #0x40, lsl #12
+8a 00 00 54	0	+0x10c  b.ge 0x1172adc5c <+0x11c>
+0c 04 00 8b	8	+0x110  add x12, x0, x0, lsl #1
+85 01 05 8b	0	+0x114  add x5, x12, x5
+0c 00 00 14	0	+0x118  b 0x1172adc88 <+0x148>
+9f 01 42 71	1	+0x11c  cmp w12, #0x80, lsl #12
+8a 00 00 54	0	+0x120  b.ge 0x1172adc70 <+0x130>
+0c e0 79 d3	6	+0x124  lsl x12, x0, #7
+86 01 06 ca	0	+0x128  eor x6, x12, x6
+07 00 00 14	0	+0x12c  b 0x1172adc88 <+0x148>
+9f 01 43 71	3	+0x130  cmp w12, #0xc0, lsl #12
+8b 00 00 54	0	+0x134  b.lt 0x1172adc84 <+0x144>
+e8 03 0c 4b	3	+0x138  neg w8, w12
+84 2c c8 9a	0	+0x13c  ror x4, x4, x8
+02 00 00 14	0	+0x140  b 0x1172adc88 <+0x148>
+63 00 00 cb	7	+0x144  sub x3, x3, x0
+ff 01 41 71	4	+0x148  cmp w15, #0x40, lsl #12
+8a 00 00 54	0	+0x14c  b.ge 0x1172adc9c <+0x15c>
+ec 04 07 8b	6	+0x150  add x12, x7, x7, lsl #1
+85 01 05 8b	0	+0x154  add x5, x12, x5
+dc ff ff 17	0	+0x158  b 0x1172adc08 <+0xc8>
+ff 01 42 71	1	+0x15c  cmp w15, #0x80, lsl #12
+8a 00 00 54	0	+0x160  b.ge 0x1172adcb0 <+0x170>
+ec e0 79 d3	5	+0x164  lsl x12, x7, #7
+86 01 06 ca	0	+0x168  eor x6, x12, x6
+d7 ff ff 17	0	+0x16c  b 0x1172adc08 <+0xc8>
+ff 01 43 71	2	+0x170  cmp w15, #0xc0, lsl #12
+6a fa ff 54	0	+0x174  b.ge 0x1172adc00 <+0xc0>
+63 00 07 cb	2	+0x178  sub x3, x3, x7
+d3 ff ff 17	0	+0x17c  b 0x1172adc08 <+0xc8>
+8d 1b 40 f9	0	+0x180  ldr x13, [x28, #0x30]
+bf 01 40 b9	0	+0x184  ldr wzr, [x13]
+1f 02 11 6b	0	+0x188  cmp w16, w17
+2a 01 00 54	0	+0x18c  b.ge 0x1172adcf0 <+0x1b0>
+4d 01 10 4b	0	+0x190  sub w13, w10, w16
+3f 02 10 6b	0	+0x194  cmp w17, w16
+ac 05 00 51	0	+0x198  sub w12, w13, #0x1
+ec b3 8c 1a	0	+0x19c  csel w12, wzr, w12, lt
+9f 41 1f 71	0	+0x1a0  cmp w12, #0x7d0
+6c 81 8c 1a	0	+0x1a4  csel w12, w11, w12, hi
+8d 01 10 0b	0	+0x1a8  add w13, w12, w16
+cb ff ff 17	0	+0x1ac  b 0x1172adc18 <+0xd8>
+1f 02 0a 6b	0	+0x1b0  cmp w16, w10
+6a 03 00 54	0	+0x1b4  b.ge 0x1172add60 <+0x220>
+cb c9 30 8b	0	+0x1b8  add x11, x14, w16, sxtw #2
+6c 11 40 b9	0	+0x1bc  ldr w12, [x11, #0x10]
+8b 7d 40 93	0	+0x1c0  sxtw x11, w12
+2d 00 0b ca	0	+0x1c4  eor x13, x1, x11
+ad 7d 02 9b	0	+0x1c8  mul x13, x13, x2
+af fd 5d d3	0	+0x1cc  lsr x15, x13, #29
+9f 01 41 71	0	+0x1d0  cmp w12, #0x40, lsl #12
+8a 00 00 54	0	+0x1d4  b.ge 0x1172add24 <+0x1e4>
+6b 05 0b 8b	0	+0x1d8  add x11, x11, x11, lsl #1
+65 01 05 8b	0	+0x1dc  add x5, x11, x5
+0c 00 00 14	0	+0x1e0  b 0x1172add50 <+0x210>
+9f 01 42 71	0	+0x1e4  cmp w12, #0x80, lsl #12
+8a 00 00 54	0	+0x1e8  b.ge 0x1172add38 <+0x1f8>
+6b e1 79 d3	0	+0x1ec  lsl x11, x11, #7
+66 01 06 ca	0	+0x1f0  eor x6, x11, x6
+07 00 00 14	0	+0x1f4  b 0x1172add50 <+0x210>
+9f 01 43 71	0	+0x1f8  cmp w12, #0xc0, lsl #12
+8b 00 00 54	0	+0x1fc  b.lt 0x1172add4c <+0x20c>
+e8 03 0c 4b	0	+0x200  neg w8, w12
+84 2c c8 9a	0	+0x204  ror x4, x4, x8
+02 00 00 14	0	+0x208  b 0x1172add50 <+0x210>
+63 00 0b cb	0	+0x20c  sub x3, x3, x11
+10 06 00 11	0	+0x210  add w16, w16, #0x1
+e1 01 0d ca	0	+0x214  eor x1, x15, x13
+1f 02 0a 6b	0	+0x218  cmp w16, w10
+eb fc ff 54	0	+0x21c  b.lt 0x1172adcf8 <+0x1b8>
+ca 00 05 8b	0	+0x220  add x10, x6, x5
+4a 01 03 8b	0	+0x224  add x10, x10, x3
+4a 01 04 8b	0	+0x228  add x10, x10, x4
+20 00 0a 8b	0	+0x22c  add x0, x1, x10
+fd 7b 42 a9	0	+0x230  ldp x29, x30, [sp, #0x20]
+ff c3 00 91	0	+0x234  add sp, sp, #0x30
+88 17 40 f9	0	+0x238  ldr x8, [x28, #0x28]
+ff 63 28 eb	0	+0x23c  cmp sp, x8
+08 02 00 54	0	+0x240  b.hi 0x1172addc0 <+0x280>
+c0 03 5f d6	0	+0x244  ret
+e0 07 7f b2	0	+0x248  orr x0, xzr, #0x6
+f9 ff ff 17	0	+0x24c  b 0x1172add70 <+0x230>
+21 12 80 12	0	+0x250  mov w1, #-0x92
+fd 03 0e aa	0	+0x254  mov x29, x14
+ea 03 00 b9	0	+0x258  str w10, [sp]
+59 c9 ed 97	0	+0x25c  bl 0x116e20300
+1f 20 03 d5	0	+0x260  nop
+1f 6b 80 f2	0	+0x264  movk xzr, #0x358
+1f 20 80 f2	0	+0x268  movk xzr, #0x100
+21 01 80 12	0	+0x26c  mov w1, #-0xa
+54 c9 ed 97	0	+0x270  bl 0x116e20300
+1f 20 03 d5	0	+0x274  nop
+9f 6d 80 f2	0	+0x278  movk xzr, #0x36c
+1f 40 80 f2	0	+0x27c  movk xzr, #0x200
+c8 fd ff 10	0	+0x280  adr x8, 0x1172add78
+88 63 02 f9	0	+0x284  str x8, [x28, #0x4c0]
+ae 6b ea 17	0	+0x288  b 0x116d48c80
+08 30 80 d2	0	+0x28c  mov x8, #0x180
+a8 da a2 f2	0	+0x290  movk x8, #0x16d5, lsl #16
+28 00 c0 f2	0	+0x294  movk x8, #0x1, lsl #32
+00 01 3f d6	0	+0x298  blr x8
+62 ff ff 17	0	+0x29c  b 0x1172adb64 <+0x24>

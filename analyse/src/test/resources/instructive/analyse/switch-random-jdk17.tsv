@@ -1,0 +1,84 @@
+# the switch (x & 3) over random values (switch-random.tsv's loop): the lowest landing share measured
+# C2 on JDK 17, Linux aarch64 (Apple M2 cores, in Docker), one second of samples. Columns: bytes, samples, offset and disassembly.
+1f 20 03 d5	0	+0x000  nop
+e9 53 40 d1	0	+0x004  sub x9, sp, #0x14, lsl #12
+3f 01 00 f9	0	+0x008  str xzr, [x9]
+ff c3 00 d1	0	+0x00c  sub sp, sp, #0x30
+fd 7b 02 a9	0	+0x010  stp x29, x30, [sp, #0x20]
+2a 0c 40 b9	0	+0x014  ldr w10, [x1, #0xc]
+4b 05 00 51	0	+0x018  sub w11, w10, #0x1
+5f 01 00 71	0	+0x01c  cmp w10, #0x0
+e9 07 00 54	0	+0x020  b.ls 0xffffa4ce72dc <+0x11c>
+7f 01 0a 6b	0	+0x024  cmp w11, w10
+e2 07 00 54	0	+0x028  b.hs 0xffffa4ce72e4 <+0x124>
+e2 03 1f 2a	0	+0x02c  mov w2, wzr
+eb 03 1f aa	0	+0x030  mov x11, xzr
+ac 82 8f d2	0	+0x034  mov x12, #0x7c15
+4c e9 af f2	0	+0x038  movk x12, #0x7f4a, lsl #16
+2c 37 cf f2	0	+0x03c  movk x12, #0x79b9, lsl #32
+ec c6 f3 f2	0	+0x040  movk x12, #0x9e37, lsl #48
+00 7d 80 52	0	+0x044  mov w0, #0x3e8
+ed 03 7f b2	0	+0x048  orr x13, xzr, #0x2
+ee 03 40 b2	0	+0x04c  orr x14, xzr, #0x1
+ef 07 40 b2	0	+0x050  orr x15, xzr, #0x3
+f0 03 1f aa	0	+0x054  mov x16, xzr
+20 00 00 14	0	+0x058  b 0xffffa4ce7298 <+0xd8>
+1f 20 03 d5	0	+0x05c  nop
+ad 01 12 cb	12	+0x060  sub x13, x13, x18
+42 04 00 11	14	+0x064  add w2, w2, #0x1
+10 76 50 ca	0	+0x068  eor x16, x16, x16, lsr #29
+5f 00 04 6b	0	+0x06c  cmp w2, w4
+ca 02 00 54	0	+0x070  b.ge 0xffffa4ce7288 <+0xc8>
+31 c8 22 8b	0	+0x074  add x17, x1, w2, sxtw #2
+31 12 40 b9	7	+0x078  ldr w17, [x17, #0x10]
+32 7e 40 93	0	+0x07c  sxtw x18, w17
+10 02 12 ca	0	+0x080  eor x16, x16, x18
+23 06 00 12	0	+0x084  and w3, w17, #0x3
+10 7e 0c 9b	0	+0x088  mul x16, x16, x12
+7f 04 00 71	0	+0x08c  cmp w3, #0x1
+61 00 00 54	0	+0x090  b.ne 0xffffa4ce725c <+0x9c>
+ce 1d 12 ca	12	+0x094  eor x14, x14, x18, lsl #7
+f3 ff ff 17	0	+0x098  b 0xffffa4ce7224 <+0x64>
+7f 04 00 71	10	+0x09c  cmp w3, #0x1
+aa 00 00 54	0	+0x0a0  b.ge 0xffffa4ce7274 <+0xb4>
+c3 00 00 35	30	+0x0a4  cbnz w3, 0xffffa4ce727c <+0xbc>
+51 06 12 8b	0	+0x0a8  add x17, x18, x18, lsl #1
+2b 02 0b 8b	0	+0x0ac  add x11, x17, x11
+ed ff ff 17	0	+0x0b0  b 0xffffa4ce7224 <+0x64>
+7f 08 00 71	1	+0x0b4  cmp w3, #0x2
+40 fd ff 54	0	+0x0b8  b.eq 0xffffa4ce7220 <+0x60>
+e8 03 11 4b	12	+0x0bc  neg w8, w17
+ef 2d c8 9a	0	+0x0c0  ror x15, x15, x8
+e8 ff ff 17	0	+0x0c4  b 0xffffa4ce7224 <+0x64>
+91 a7 41 f9	0	+0x0c8  ldr x17, [x28, #0x348]
+3f 02 40 b9	0	+0x0cc  ldr wzr, [x17]
+5f 00 0a 6b	0	+0x0d0  cmp w2, w10
+0a 01 00 54	0	+0x0d4  b.ge 0xffffa4ce72b4 <+0xf4>
+5f 01 02 6b	0	+0x0d8  cmp w10, w2
+52 01 02 4b	0	+0x0dc  sub w18, w10, w2
+f2 b3 92 1a	0	+0x0e0  csel w18, wzr, w18, lt
+5f a2 0f 71	0	+0x0e4  cmp w18, #0x3e8
+12 80 92 1a	0	+0x0e8  csel w18, w0, w18, hi
+44 02 02 0b	0	+0x0ec  add w4, w18, w2
+e1 ff ff 17	0	+0x0f0  b 0xffffa4ce7234 <+0x74>
+ca 01 0b 8b	0	+0x0f4  add x10, x14, x11
+4a 01 0d 8b	0	+0x0f8  add x10, x10, x13
+4a 01 0f 8b	0	+0x0fc  add x10, x10, x15
+40 01 10 8b	0	+0x100  add x0, x10, x16
+fd 7b 42 a9	0	+0x104  ldp x29, x30, [sp, #0x20]
+ff c3 00 91	0	+0x108  add sp, sp, #0x30
+88 a3 41 f9	0	+0x10c  ldr x8, [x28, #0x340]
+ff 63 28 eb	0	+0x110  cmp sp, x8
+48 01 00 54	0	+0x114  b.hi 0xffffa4ce72fc <+0x13c>
+c0 03 5f d6	0	+0x118  ret
+e0 07 7f b2	0	+0x11c  orr x0, xzr, #0x6
+f9 ff ff 17	0	+0x120  b 0xffffa4ce72c4 <+0x104>
+fd 03 01 aa	0	+0x124  mov x29, x1
+ea 03 00 b9	0	+0x128  str w10, [sp]
+21 11 80 12	0	+0x12c  mov w1, #-0x8a
+64 5d ea 97	0	+0x130  bl 0xffffa477e880
+21 01 80 12	0	+0x134  mov w1, #-0xa
+62 5d ea 97	0	+0x138  bl 0xffffa477e880
+88 fe ff 10	0	+0x13c  adr x8, 0xffffa4ce72cc
+88 af 01 f9	0	+0x140  str x8, [x28, #0x358]
+bf 5b ea 17	0	+0x144  b 0xffffa477e200

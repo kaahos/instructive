@@ -153,6 +153,7 @@ model and the samples per instruction, and returns its findings hottest first.
 | `PointerChasingRule` | loops where each load's address comes from the previous iteration's load, as in walking a linked list | [Finding pointer chasing](#finding-pointer-chasing) |
 | `FailedCheckRule` | explicit null checks that throw: nulls have been seen there | [Finding null checks that have failed](#finding-null-checks-that-have-failed) |
 | `FailedCheckRule` | explicit range checks that throw, or that a loop kept: out-of-bounds indexes have been seen there, or the loop isn't counted | [Finding range checks that have failed](#finding-range-checks-that-have-failed) |
+| `UnpredictableBranchRule` | hot loops branching on the data they load, whose samples land where mispredicted branches' would | [Finding unpredictable branches](#finding-unpredictable-branches) |
 
 ## Finding long dependency chains
 
@@ -1061,6 +1062,166 @@ Traps for other reasons, such as the predicates that stand in for eliminated che
 aren't reported, and neither are the reasons' numbers above 3, which change between JDK
 versions.
 
+## Finding unpredictable branches
+
+A branch the CPU predicts wrongly costs a pipeline's worth of work: everything fetched
+down the wrong path is thrown away, and the CPU starts again at the right one. A branch
+whose direction depends on the data a loop reads, such as a `switch` over the elements
+of an array, is only as predictable as the data.
+
+The agent samples on a CPU timer, so it can't see mispredictions directly, only where
+the time goes. But a misprediction leaves a mark there: while the CPU refills its
+pipeline from the right path, the samples land on that path's first instructions.
+
+### A switch over random data
+
+Each element is hashed, with the hash carried from one element to the next, and then a
+`switch` picks one of four operations:
+
+```java
+static long dispatch(int[] data) {
+    long a = 0, b = 1, c = 2, d = 3, h = 0;
+    for (int i = 0; i < data.length; i++) {
+        int x = data[i];
+        h = (h ^ x) * 0x9E3779B97F4A7C15L;
+        h ^= h >>> 29;
+        switch (x & 3) {
+            case 0 -> a += x * 3L;
+            case 1 -> b ^= (long) x << 7;
+            case 2 -> c -= x;
+            default -> d = Long.rotateLeft(d, x);
+        }
+    }
+    return a + b + c + d + h;
+}
+```
+
+On 65,536 random values, and on the same values sorted by `x & 3` so the switch goes
+the same way for long runs (JDK 25 on an Apple M2):
+
+| | ns/element | samples on the first 2 instructions of each case |
+|---|---|---|
+| random | 4.72 | 51% |
+| sorted | 1.76 | 6% |
+
+With sorted values the hash dominates the loop; with random ones the mispredictions do.
+C2 compiles the switch as a decision tree of compares and branches. Here is the loop
+with random values: the samples are on the branches and the first instruction of each
+case, `lsl x17, x17, #7` (case 1), `neg w8, w3` (the rotate) and `sub x13, x13, x17`
+(case 2), not on the hash's `mul`:
+
+```
+Work.dispatch([I)J
+  tier 4 (C2), compile id 370, 416 bytes at 0x0000000116e6dfc0, 93 samples
+
+  pc                  bytes        instruction                      count        %
+  ...
+  0x0000000116e6e030  ad 01 11 cb  sub x13, x13, x17                    9    9.68%
+  0x0000000116e6e034  42 04 00 11  add w2, w2, #0x1                     7    7.53%
+  0x0000000116e6e038  d0 00 10 ca  eor x16, x6, x16
+  0x0000000116e6e03c  5f 00 00 6b  cmp w2, w0
+  0x0000000116e6e040  0a 03 00 54  b.ge 0x116e6e0a0 <+0xe0>
+  0x0000000116e6e044  31 c8 22 8b  add x17, x1, w2, sxtw #2
+  0x0000000116e6e048  23 12 40 b9  ldr w3, [x17, #0x10]
+  0x0000000116e6e04c  71 7c 40 93  sxtw x17, w3
+  0x0000000116e6e050  10 02 11 ca  eor x16, x16, x17
+  0x0000000116e6e054  10 7e 0c 9b  mul x16, x16, x12
+  0x0000000116e6e058  65 04 00 12  and w5, w3, #0x3
+  0x0000000116e6e05c  06 fe 5d d3  lsr x6, x16, #29
+  0x0000000116e6e060  bf 04 00 71  cmp w5, #0x1                        11   11.83%
+  0x0000000116e6e064  81 00 00 54  b.ne 0x116e6e074 <+0xb4>
+  0x0000000116e6e068  31 e2 79 d3  lsl x17, x17, #7                    22   23.66%
+  0x0000000116e6e06c  2e 02 0e ca  eor x14, x17, x14
+  0x0000000116e6e070  f1 ff ff 17  b 0x116e6e034 <+0x74>
+  0x0000000116e6e074  bf 04 00 71  cmp w5, #0x1                         2    2.15%
+  0x0000000116e6e078  aa 00 00 54  b.ge 0x116e6e08c <+0xcc>
+  0x0000000116e6e07c  c5 00 00 35  cbnz w5, 0x116e6e094 <+0xd4>        23   24.73%
+  0x0000000116e6e080  31 06 11 8b  add x17, x17, x17, lsl #1
+  0x0000000116e6e084  2a 02 0a 8b  add x10, x17, x10
+  0x0000000116e6e088  eb ff ff 17  b 0x116e6e034 <+0x74>
+  0x0000000116e6e08c  bf 08 00 71  cmp w5, #0x2                         3    3.23%
+  0x0000000116e6e090  00 fd ff 54  b.eq 0x116e6e030 <+0x70>
+  0x0000000116e6e094  e8 03 03 4b  neg w8, w3                          16   17.20%
+  0x0000000116e6e098  ef 2d c8 9a  ror x15, x15, x8
+  0x0000000116e6e09c  e6 ff ff 17  b 0x116e6e034 <+0x74>
+  ...
+```
+
+With sorted values, 46% of the samples are on the `and w13, w14, #0x3` straight after
+the hash, and few on the cases.
+
+### The rule
+
+`UnpredictableBranchRule` looks, in each hot innermost loop, for conditional branches
+whose condition depends on a value loaded in the same iteration: for a `b.cond`, the
+flag-setting instruction before it (here `cmp w5, #0x1`), for a `cbz` or `tbnz` the
+register it tests, traced back through the dependency graph to a load (here
+`ldr w3, [x17, #0x10]`, `data[i]`). Only branches choosing between paths inside the
+loop count: a range check branching to a trap, or a `break` out of a search, goes one
+way until the last time. It then adds up the samples on the first two instructions of
+each path those branches lead to, leaving out paths that are just the next compare and
+branch of the same decision tree or chain, since those cost the same whether the
+branches mispredict or not. It reports the loop if that's at least 25% of its samples:
+
+```java
+List<Instruction> code = new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
+List<UnpredictableBranches> loops = new UnpredictableBranchRule().apply(
+        code, new Aarch64RegisterModel(), i -> profile.count((int) (i.address() - profile.address())));
+UnpredictableBranches loop = loops.get(0);
+loop.branches();       // b.ne, b.ge, cbnz, b.eq: each with its condition (cmp w5, #0x1...) and load
+loop.samples();        // 93
+loop.landingSamples(); // 47, on the cases' first instructions
+loop.landingShare();   // 0.51
+```
+
+The sorted loop has the same branches, but only 6% of its samples land on the cases, so
+it isn't reported.
+
+### If/else chains
+
+The same rule finds an `if`/`else if`/`else` chain over the data, which C2 compiles to
+the same kind of code: a compare and a conditional branch per condition.
+
+```java
+if (x < 1 << 18) {
+    a += x * 3L;
+} else if (x < 2 << 18) {
+    b ^= (long) x << 7;
+} else if (x < 3 << 18) {
+    c -= x;
+} else {
+    d = Long.rotateLeft(d, x);
+}
+```
+
+| after the same hash | ns/element | samples landing after the branches | reported |
+|---|---|---|---|
+| four-way chain, random values | 3.94 | 51% | yes: 6 branches (3 conditions, unrolled twice), all on `data[i]` or `data[i + 1]` |
+| four-way chain, sorted values | 1.77 | 3% | no |
+| `if (x < 1 << 19) a += x; else a -= x;`, random values | 2.55 | 55% | yes |
+| `a += x < 1 << 19 ? x : -x;`, random values | 1.79 | | no: on JDK 25 C2 compiles it to `csel`, so there's no branch |
+
+The ternary shows what a conditional select is worth when the data is unpredictable: it
+runs as fast as the sorted chain. C2 keeps the branch for the equivalent `if`/`else`,
+which costs it 0.76 ns per element here. On JDK 17 and 21 C2 keeps the ternary's branch
+too (2.6 ns per element), and the rule reports it; `Math.min` is a `csel` on all three.
+
+### Where the threshold comes from
+
+Across the switch and the four-way chain on JDK 17, 21 and 25 (Linux, in Docker, and
+macOS, all on M2 cores), the loops over random data land 37% to 76% of their samples on
+the paths their branches choose between, and the same loops over sorted data 3% to 14%,
+so the rule reports a loop at 25% or more (`DEFAULT_MINIMUM_LANDING_SHARE`). Counting
+the decision tree's own compares as landing, as a first version did, put a sorted chain
+on JDK 17 at 40%: the hash's samples skid onto the chain's first compare.
+
+The share shows that branches mispredict, not that it costs much. With three rounds of
+hashing instead of one, the hash's latency hides the mispredictions, so random and
+sorted values run equally fast, yet 40% of the random loop's samples still land on the
+cases (6% sorted). How far samples skid past a stall also depends on the CPU, and these
+measurements are all from an Apple M2, so the threshold may need tuning on other
+machines.
+
 ## Using it
 
 Load the native library, either with the Java agent (`-javaagent:agent.jar`) or by
@@ -1154,6 +1315,6 @@ published: build it locally.
   differences between these versions. On macOS, JDKs before 25 don't export the
   VMStructs symbols at all.
 - **Interpreted code** is counted, but not attributed to methods.
-- **Analysis rules** (`LongDependencyChainRule`, `NotUnrolledLoopRule`, `PointerChasingRule`, `FailedCheckRule`) work on AArch64
+- **Analysis rules** (`LongDependencyChainRule`, `NotUnrolledLoopRule`, `PointerChasingRule`, `FailedCheckRule`, `UnpredictableBranchRule`) work on AArch64
   only so far: they need a register model, and only `Aarch64RegisterModel` exists. They
   track registers, not memory.
