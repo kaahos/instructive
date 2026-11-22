@@ -1092,7 +1092,10 @@ a single instruction, so continuous profiling should reset regularly.
 
 - **Sampling:** a CPU-time timer delivers `SIGPROF` every 10 ms of CPU time: one POSIX
   timer per thread on Linux, and a process-wide `setitimer` on macOS. The signal
-  handler takes the program counter from the signal context.
+  handler takes the program counter from the signal context. A `SIGPROF` that isn't the
+  agent's, such as another profiler's timer signal, is passed on to the handler that was
+  registered before it, so the agent can run alongside another profiler. On Linux the
+  agent's timers tag their signals, so the two never confuse each other's samples.
 - **Tracking compiled code:** JVMTI `CompiledMethodLoad`/`CompiledMethodUnload` events
   keep a concurrent radix tree, keyed by code address, of every loaded compiled
   method. Its leaf records are 64 bytes each: the compile tier and id, a total sample

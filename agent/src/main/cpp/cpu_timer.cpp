@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <pthread.h>
 
 #if defined(__APPLE__)
 #include <sys/time.h>
@@ -18,8 +19,9 @@ namespace {
 
 constexpr long INTERVAL_NANOS = 10'000'000;  // 10ms
 
-// The handler that was registered before ours, restored when ours is removed. Written
-// before our handler is installed and only read afterwards.
+// The handler that was registered before ours: SIGPROF that isn't ours is passed on to
+// it, and it is restored when ours is removed. Read from the kernel before our handler
+// is installed, so the signal handler never sees it half-written.
 struct sigaction previous_action;
 bool installed = false;
 
@@ -38,22 +40,46 @@ bool is_own_signal(const siginfo_t* info) {
 #if defined(__linux__)
     return info != nullptr && info->si_code == SI_TIMER && info->si_value.sival_ptr == &own_signal_tag;
 #else
-    // setitimer signals can't be labelled.
-    return true;
+    // setitimer signals can't be labelled: while started, every SIGPROF is taken as ours.
+    (void) info;
+    return active.load(std::memory_order_relaxed);
 #endif
 }
 
-void handle_sigprof(int signo, siginfo_t* info, void* ucontext) {
-    if (!active.load(std::memory_order_relaxed) || !is_own_signal(info)) {
+// Passes a SIGPROF that isn't ours to the handler registered before ours, with that
+// handler's mask blocked, as the kernel would have called it. A previous disposition of
+// SIG_IGN or SIG_DFL drops it: re-raising under SIG_DFL would terminate the process
+// over a stray signal.
+void forward(int signo, siginfo_t* info, void* ucontext) {
+    bool with_info = (previous_action.sa_flags & SA_SIGINFO) != 0;
+    if (with_info ? previous_action.sa_sigaction == nullptr
+                  : previous_action.sa_handler == SIG_IGN || previous_action.sa_handler == SIG_DFL) {
         return;
     }
+    sigset_t saved;
+    pthread_sigmask(SIG_BLOCK, &previous_action.sa_mask, &saved);
+    if (with_info) {
+        previous_action.sa_sigaction(signo, info, ucontext);
+    } else {
+        previous_action.sa_handler(signo);
+    }
+    pthread_sigmask(SIG_SETMASK, &saved, nullptr);
+}
+
+void handle_sigprof(int signo, siginfo_t* info, void* ucontext) {
     // Preserve errno for the interrupted code.
     int saved_errno = errno;
-    tick_count.fetch_add(1, std::memory_order_relaxed);
-    CpuTimer::Callback on_tick = callback.load(std::memory_order_acquire);
-    if (on_tick != nullptr) {
-        on_tick(info, ucontext);
+    if (!is_own_signal(info)) {
+        // Someone else's, such as another profiler's timer.
+        forward(signo, info, ucontext);
+    } else if (active.load(std::memory_order_relaxed)) {
+        tick_count.fetch_add(1, std::memory_order_relaxed);
+        CpuTimer::Callback on_tick = callback.load(std::memory_order_acquire);
+        if (on_tick != nullptr) {
+            on_tick(info, ucontext);
+        }
     }
+    // Otherwise ours but stopped: a signal still pending when the timers were deleted.
     errno = saved_errno;
 }
 
@@ -61,12 +87,16 @@ bool install_handler() {
     if (installed) {
         return true;
     }
+    // Read the previous handler before ours can run and use it.
+    if (sigaction(SIGPROF, nullptr, &previous_action) != 0) {
+        return false;
+    }
     struct sigaction action;
     std::memset(&action, 0, sizeof(action));
     action.sa_sigaction = handle_sigprof;
     action.sa_flags = SA_SIGINFO | SA_RESTART;
     sigemptyset(&action.sa_mask);
-    if (sigaction(SIGPROF, &action, &previous_action) != 0) {
+    if (sigaction(SIGPROF, &action, nullptr) != 0) {
         return false;
     }
     installed = true;

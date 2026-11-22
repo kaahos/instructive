@@ -25,14 +25,17 @@ namespace instructive {
 // and thread_ended() do nothing.
 //
 // The SIGPROF handler is installed on the first start() and stays installed across
-// stop()/start(). It does not chain to a handler registered before it: other sources
-// of SIGPROF may be present, and their signals are not ours to interpret. On Linux,
-// every timer labels its signals with a tag in sigev_value, and the handler ignores
-// any SIGPROF that isn't a timer signal carrying that tag, such as one sent with kill()
-// or raised by someone else's timer. setitimer signals carry no value, so on macOS
-// every SIGPROF received while started is taken as ours. On destruction the previous
-// handler is restored, if ours is still the current one. The handler state is
-// process-wide, so only one CpuTimer may exist at a time.
+// stop()/start(). It passes any SIGPROF that isn't ours to the handler registered
+// before it, so the agent can run alongside another profiler. On Linux, every timer
+// labels its signals with a tag in sigev_value: a SIGPROF without it (another
+// profiler's timer, or one sent with kill()) is passed on, and one with it is ours,
+// counted while started and dropped while stopped (a signal pending when the timers
+// were deleted), never passed on. setitimer signals carry no value, so on macOS every
+// SIGPROF is taken as ours while started and passed on while stopped. The previous
+// handler is called with its own mask blocked; if it was SIG_IGN or SIG_DFL, the signal
+// is dropped. On destruction the previous handler is restored, if ours is still the
+// current one. The handler state is process-wide, so only one CpuTimer may exist at a
+// time.
 class CpuTimer {
 public:
     // Called from the SIGPROF handler for each of our signals while the timer is

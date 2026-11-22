@@ -160,6 +160,10 @@ fileTree("src/test/cpp") { include("*_test.cpp") }.files.sorted().forEach { test
         }
         arguments.addAll(if (sanitize != null) listOf("-O1", "-g", "-fsanitize=$sanitize") else listOf("-O2"))
         arguments.addAll(listOf(test.path, source.path, "-o", executable.get().asFile.path))
+        if (os.isLinux) {
+            // timer_create lives in librt on glibc older than 2.34.
+            arguments.add("-lrt")
+        }
         commandLine(arguments)
     }
     val run = tasks.register<Exec>("run${taskName}Test") {
