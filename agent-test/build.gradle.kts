@@ -59,6 +59,9 @@ tasks.withType<Test>().configureEach {
             "-XX:CompileCommand=dontinline,instructive.agenttest.NotUnrolledLoopTest::*",
             "-XX:CompileCommand=dontinline,instructive.agenttest.PointerChasingTest::sum*",
             "-XX:CompileCommand=dontinline,instructive.agenttest.FailedCheckTest::sum*",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::dispatchRandom",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::chainRandom",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::select",
             // MethodNamesTest looks for these as compiled methods of their own.
             "-XX:CompileCommand=dontinline,instructive.agenttest.MethodNamesTest::twice",
             "-XX:CompileCommand=dontinline,instructive.agenttest.MethodNamesTest::thrice",
