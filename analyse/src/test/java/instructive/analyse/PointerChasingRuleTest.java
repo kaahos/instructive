@@ -39,8 +39,25 @@ class PointerChasingRuleTest {
                 "ldr w2, [x17, #0xc]", "ldr w3, [x2, #0x8]", "ldr w2, [x14, #0xc]"), texts(chase.dereferences()));
         // The class check of the first item has more than half the samples.
         assertEquals(56, method.count(method.at(0x10c)));
-        assertEquals(88, chase.chaseSamples());
+        // All but the loop counter's depend on the chase.
+        assertEquals(92, chase.chaseSamples());
         assertEquals(98, chase.samples());
+    }
+
+    @Test
+    void countsSamplesThatSkidPastTheLoads() {
+        // The same loop on a different CPU: the stalled loads' samples land on the
+        // instructions waiting for them (cmp w3, w13 after the class word's load, and so
+        // on), not on the loads. They depend on the chase, so they count.
+        Listing method = Listing.load("linked-list-sum-skid.tsv");
+        List<PointerChase> chases = new PointerChasingRule().apply(method.code(), registers, method::count);
+        assertEquals(1, chases.size(), () -> describe(chases));
+        PointerChase chase = chases.get(0);
+        assertEquals(List.of("ldr w17, [x16, #0x10]", "ldr w16, [x17, #0x10]"), texts(chase.cycle()));
+        assertEquals(20, method.count(method.at(0x110)));  // cmp w3, w13
+        assertEquals(99, chase.samples());
+        // All but the loop counter's: mov w5, w6 (1) and add w6, w5, #0x2 (2).
+        assertEquals(96, chase.chaseSamples());
     }
 
     @Test

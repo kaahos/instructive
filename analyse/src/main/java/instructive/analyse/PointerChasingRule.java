@@ -105,13 +105,15 @@ public final class PointerChasingRule {
             }
             reported.addAll(cycleLoads);
 
-            List<Integer> dereferences = dereferences(graph, controlFlow, loop, recurrence.cycle());
+            BitSet dependents = dependents(graph, controlFlow, loop, recurrence.cycle());
+            Set<Integer> onCycle = new HashSet<>(recurrence.cycle());
+            List<Integer> dereferences = new ArrayList<>();
             long chaseSamples = 0;
-            for (int i : recurrence.cycle()) {
+            for (int i = dependents.nextSetBit(0); i >= 0; i = dependents.nextSetBit(i + 1)) {
                 chaseSamples += sampleCount.applyAsLong(code.get(i));
-            }
-            for (int i : dereferences) {
-                chaseSamples += sampleCount.applyAsLong(code.get(i));
+                if (!onCycle.contains(i) && code.get(i).kind() == InstructionKind.LOAD) {
+                    dereferences.add(i);
+                }
             }
             long header = code.get(controlFlow.blocks().get(loop.header()).start()).address();
             findings.add(new PointerChase(header, recurrence.register(), instructions(graph, recurrence.cycle()),
@@ -122,10 +124,10 @@ public final class PointerChasingRule {
         return findings;
     }
 
-    // The loads in `loop`, other than the cycle's, whose address depends on the chase:
-    // following uses forward, within the iteration, from the cycle's instructions and from
-    // the instructions using the pointer the cycle carried in.
-    private static List<Integer> dereferences(
+    // The cycle and every instruction in `loop` that depends on it: following uses forward,
+    // within the iteration, from the cycle's instructions and from the instructions using
+    // the pointer the cycle carried in.
+    private static BitSet dependents(
             DependencyGraph graph, ControlFlowGraph controlFlow, ControlFlowGraph.Loop loop, List<Integer> cycle) {
         BitSet reached = new BitSet();
         cycle.forEach(reached::set);
@@ -162,13 +164,7 @@ public final class PointerChasingRule {
                 }
             }
         }
-        List<Integer> dereferences = new ArrayList<>();
-        for (int i = reached.nextSetBit(0); i >= 0; i = reached.nextSetBit(i + 1)) {
-            if (!onCycle.contains(i) && graph.instruction(i).kind() == InstructionKind.LOAD) {
-                dereferences.add(i);
-            }
-        }
-        return dereferences;
+        return reached;
     }
 
     private static int loads(DependencyGraph graph, List<Integer> cycle) {
