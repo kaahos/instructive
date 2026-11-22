@@ -9,8 +9,10 @@ import instructive.agent.InstructionProfile;
 import instructive.agent.Sampler;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -21,11 +23,27 @@ import org.junit.jupiter.api.Test;
 class MethodNamesTest {
     private static final String CLASS = "instructive.agenttest.MethodNamesTest.";
 
+    private static final List<String> KERNELS = List.of("twice(I)I", "twice(J)J", "thrice(I)I", "half(D)D");
+
+    // Calls the kernels until each is compiled: on a busy machine the compiler can take a
+    // while to get to them. They're kept out of line (dontinline in the build), so they
+    // are compiled as methods of their own and stay in use.
     @BeforeAll
     static void compile() {
         long sink = 0;
-        for (int i = 0; i < 20000; i++) {
-            sink += twice(i) + twice((long) i) + thrice(i) + (long) half(i);
+        long deadline = System.nanoTime() + 30_000_000_000L;
+        Set<String> compiled = new HashSet<>();
+        while (compiled.size() < KERNELS.size()) {
+            assertTrue(System.nanoTime() < deadline, () -> "not compiled after 30s: only " + compiled);
+            for (int i = 0; i < 20000; i++) {
+                sink += twice(i) + twice((long) i) + thrice(i) + (long) half(i);
+            }
+            Sampler.forEachMethod(profile -> {
+                String name = profile.name();
+                if (name.startsWith(CLASS) && KERNELS.contains(name.substring(CLASS.length()))) {
+                    compiled.add(name.substring(CLASS.length()));
+                }
+            });
         }
         assertNotEquals(42, sink);
     }
