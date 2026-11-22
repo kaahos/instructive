@@ -1270,6 +1270,16 @@ a single instruction, so continuous profiling should reset regularly.
   method. Its leaf records are 64 bytes each: the compile tier and id, a total sample
   count and where the method's per-PC counters are. The handler looks the PC up there,
   without locks or allocation. Freed records are reclaimed safely using epochs.
+- **Virtual dispatch at the call site:** a call that has seen too many receiver types
+  to inline goes through a vtable or itable stub, and a profiler usually shows the time
+  spent there as a stub, with no way to tell which call it belongs to. The agent learns
+  the stubs' addresses from JVMTI, and attributes a sample taken in one to the call
+  instruction that reached it, in the calling method: the stub builds no frame, so the
+  return address is still in the link register (or on top of the stack). The cost of the
+  dispatch shows up where it was paid for, at the call in the user's code. A loop calling
+  an interface method on four types of receiver: before, 2 of its 92 samples were in the
+  loop and 19 in stubs; with the attribution, 21 of its samples are on the `bl`, and none
+  are left in stubs.
 - **Counters only for sampled methods:** most compiled methods are never sampled, so a
   method's per-PC counters are claimed from a separate region on its first sample, by
   the signal handler, with a compare-and-swap, and all of them are released when

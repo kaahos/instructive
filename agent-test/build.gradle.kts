@@ -62,6 +62,8 @@ tasks.withType<Test>().configureEach {
             "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::dispatchRandom",
             "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::chainRandom",
             "-XX:CompileCommand=dontinline,instructive.agenttest.UnpredictableBranchTest::select",
+            // DispatchAttributionTest profiles the loop as a method of its own.
+            "-XX:CompileCommand=dontinline,instructive.agenttest.DispatchAttributionTest::sumAreas",
             // MethodNamesTest looks for these as compiled methods of their own.
             "-XX:CompileCommand=dontinline,instructive.agenttest.MethodNamesTest::twice",
             "-XX:CompileCommand=dontinline,instructive.agenttest.MethodNamesTest::thrice",
