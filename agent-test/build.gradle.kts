@@ -20,8 +20,8 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-tasks.test {
-    useJUnitPlatform()
+// Every test JVM runs with the agent, and the compile commands the tests rely on.
+tasks.withType<Test>().configureEach {
     // The agent's native unit tests run wherever its integration tests do, CI included.
     dependsOn(":agent:nativeTest")
     inputs.files(agentJar)
@@ -46,4 +46,25 @@ tasks.test {
             "-XX:CompileCommand=dontinline,instructive.agenttest.FailedCheckTest::sum*",
         )
     })
+}
+
+// Tests tagged "small-counter-storage" need a JVM of their own, whose counter storage
+// is too small for every sampled method.
+val smallCounterStorageTest = tasks.register<Test>("smallCounterStorageTest") {
+    description = "Runs the tests that need the per-PC counter storage to fill up."
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform {
+        includeTags("small-counter-storage")
+    }
+    systemProperty("instructive.counterCapacity", "1024")
+}
+
+tasks.test {
+    useJUnitPlatform {
+        excludeTags("small-counter-storage")
+    }
+    // So that running the tests (as CI does) runs these too.
+    dependsOn(smallCounterStorageTest)
 }

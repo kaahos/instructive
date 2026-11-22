@@ -10,6 +10,7 @@
 
 #include "code_cache.h"
 #include "compiled_method_map.h"
+#include "counter_arena.h"
 #include "cpu_timer.h"
 #include "profile_arena.h"
 #include "string_dictionary.h"
@@ -31,7 +32,12 @@ namespace instructive {
 // signal handler and JVMTI callbacks reach it through a global.
 class Sampler {
 public:
-    Sampler(JavaVM* vm, jvmtiEnv* jvmti);
+    // Per-PC counters for this many bytes of code (on AArch64, where a counter covers an
+    // instruction, a quarter as much): 256 MiB of counters' worth of code.
+    static constexpr size_t DEFAULT_COUNTER_CAPACITY = (size_t{256} << 20) >> CompiledMethod::PC_SHIFT;
+
+    // `counter_capacity` bytes are reserved for per-PC counters.
+    Sampler(JavaVM* vm, jvmtiEnv* jvmti, size_t counter_capacity = DEFAULT_COUNTER_CAPACITY);
     ~Sampler();
 
     Sampler(const Sampler&) = delete;
@@ -60,12 +66,17 @@ public:
     // The storage holding every CompiledMethod record, shared with Java.
     const ProfileArena& arena() const { return arena_; }
 
+    // The storage holding the per-PC counters of sampled methods, shared with Java.
+    const CounterArena& counters() const { return counters_; }
+
     // Samples per CodeKind, indexed by its value.
     uint64_t kind_count(CodeKind kind) const {
         return kind_counts_[static_cast<size_t>(kind)].load(std::memory_order_relaxed);
     }
 
-    // Zeroes the per-kind counts and every tracked method's total and per-PC counts.
+    // Starts a new sampling window: zeroes the per-kind counts and every tracked method's
+    // total, and releases all per-PC counters, which methods claim again when next
+    // sampled. Samples in compiled code taken while it runs are dropped.
     void reset_counts();
 
     // The method with these dictionary codes (a CompiledMethod's class_code, name_code
@@ -98,6 +109,9 @@ private:
     CodeCache code_cache_;
     // Declared before the map, which returns records to it.
     ProfileArena arena_;
+    CounterArena counters_;
+    // Serialises reset_counts().
+    std::mutex reset_lock_;
     // Records refer to these by code; strings are never removed, so codes in records
     // copied to Java stay valid for as long as the library is loaded.
     StringDictionary class_signatures_;

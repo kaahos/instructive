@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <new>
 #include <string>
@@ -16,15 +17,52 @@
 // explicitly from Java through instructive.agent.Sampler.
 
 namespace {
+
 instructive::Sampler* sampler = nullptr;
+
+// The system property `name` as a positive number of bytes, or `fallback`.
+size_t size_property(JavaVM* vm, const char* name, size_t fallback) {
+    JNIEnv* env = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_8) != JNI_OK) {
+        return fallback;
+    }
+    size_t result = fallback;
+    jclass system = env->FindClass("java/lang/System");
+    jmethodID get_property =
+        system == nullptr ? nullptr : env->GetStaticMethodID(system, "getProperty", "(Ljava/lang/String;)Ljava/lang/String;");
+    jstring key = get_property == nullptr ? nullptr : env->NewStringUTF(name);
+    auto value = key == nullptr ? nullptr
+                                : static_cast<jstring>(env->CallStaticObjectMethod(system, get_property, key));
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    } else if (value != nullptr) {
+        const char* text = env->GetStringUTFChars(value, nullptr);
+        if (text != nullptr) {
+            char* end = nullptr;
+            unsigned long long parsed = std::strtoull(text, &end, 10);
+            if (end != text && *end == '\0' && parsed > 0) {
+                result = static_cast<size_t>(parsed);
+            }
+            env->ReleaseStringUTFChars(value, text);
+        }
+    }
+    env->DeleteLocalRef(value);
+    env->DeleteLocalRef(key);
+    env->DeleteLocalRef(system);
+    return result;
 }
+
+}  // namespace
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     jvmtiEnv* jvmti = nullptr;
     if (vm->GetEnv(reinterpret_cast<void**>(&jvmti), JVMTI_VERSION_1_2) != JNI_OK) {
         return JNI_ERR;
     }
-    sampler = new (std::nothrow) instructive::Sampler(vm, jvmti);
+    // Bytes reserved for per-PC counters, e.g. -Dinstructive.counterCapacity=67108864.
+    size_t counter_capacity =
+        size_property(vm, "instructive.counterCapacity", instructive::Sampler::DEFAULT_COUNTER_CAPACITY);
+    sampler = new (std::nothrow) instructive::Sampler(vm, jvmti, counter_capacity);
     if (sampler == nullptr) {
         jvmti->DisposeEnvironment();
         return JNI_ERR;
@@ -87,6 +125,14 @@ JNIEXPORT jobject JNICALL Java_instructive_agent_Sampler_profileBuffer0(JNIEnv* 
         return nullptr;
     }
     return env->NewDirectByteBuffer(arena.base(), static_cast<jlong>(arena.capacity()));
+}
+
+JNIEXPORT jobject JNICALL Java_instructive_agent_Sampler_counterBuffer0(JNIEnv* env, jclass cls) {
+    const instructive::CounterArena& counters = sampler->counters();
+    if (!counters.available()) {
+        return nullptr;
+    }
+    return env->NewDirectByteBuffer(counters.base(), static_cast<jlong>(counters.capacity()));
 }
 
 JNIEXPORT jlong JNICALL Java_instructive_agent_Sampler_profileBytesUsed0(JNIEnv* env, jclass cls) {

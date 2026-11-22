@@ -1072,7 +1072,7 @@ Sampler.forEachHottestMethod(10, profile -> {
     // Keep a snapshot if you need it afterwards.
     InstructionProfile snapshot = profile.snapshot();
     // name(), compLevel(), compileId(), address(), total(), count(offset), counts(),
-    // machineCode(), classSignatureCode(), methodNameCode(), methodSignatureCode() ...
+    // machineCode(), hasMissingCounts(), classSignatureCode(), methodNameCode() ...
 });
 
 Sampler.forEachMethod(profile -> { /* every loaded compiled method */ });
@@ -1090,10 +1090,16 @@ a single instruction, so continuous profiling should reset regularly.
   handler takes the program counter from the signal context.
 - **Tracking compiled code:** JVMTI `CompiledMethodLoad`/`CompiledMethodUnload` events
   keep a concurrent radix tree, keyed by code address, of every loaded compiled
-  method. Its leaf records hold the compile tier and id, a total sample count and a
-  dense array of per-PC counters, so a record's size depends only on the code it
-  covers. The handler looks the PC up there, without locks or allocation. Freed records
-  are reclaimed safely using epochs.
+  method. Its leaf records are 64 bytes each: the compile tier and id, a total sample
+  count and where the method's per-PC counters are. The handler looks the PC up there,
+  without locks or allocation. Freed records are reclaimed safely using epochs.
+- **Counters only for sampled methods:** most compiled methods are never sampled, so a
+  method's per-PC counters are claimed from a separate region on its first sample, by
+  the signal handler, with a compare-and-swap, and all of them are released when
+  `resetCounts()` starts a new window. Records and counters together come to about
+  5-8% of the code cache's size on AArch64. If the region fills up, a method's total
+  still counts, and `hasMissingCounts()` says its per-instruction counts are
+  incomplete.
 - **Names, once each:** a record doesn't hold its method's name. Each distinct class
   signature, method name and method signature is kept once, in a concurrent dictionary
   that numbers strings in the order it first sees them, and records hold the three

@@ -25,7 +25,8 @@ uint32_t intern(StringDictionary& dictionary, jvmtiEnv* jvmti, char* bytes) {
 
 }  // namespace
 
-Sampler::Sampler(JavaVM* vm, jvmtiEnv* jvmti) : vm_(vm), jvmti_(jvmti), timer_(&Sampler::on_tick) {
+Sampler::Sampler(JavaVM* vm, jvmtiEnv* jvmti, size_t counter_capacity)
+    : vm_(vm), jvmti_(jvmti), counters_(counter_capacity), timer_(&Sampler::on_tick) {
     // Any address inside libjvm identifies the library holding the VMStructs tables.
     if (vm_structs_.init(reinterpret_cast<const void*>(vm->functions->GetEnv))) {
         code_cache_.init(vm_structs_);
@@ -213,7 +214,11 @@ void Sampler::on_tick(siginfo_t* info, void* ucontext) {
         CompiledMethodMap::ReadGuard guard(*sampler->compiled_methods_);
         CompiledMethod* method = sampler->compiled_methods_->lookup(pc);
         if (method != nullptr) {
-            method->record_sample(pc);
+            // While counters are being reset, a sample is dropped rather than counted in
+            // the total alone, so totals and per-PC counts always agree.
+            if (!sampler->counters_.suspended()) {
+                method->record_sample(pc, sampler->counters_);
+            }
             kind = CodeKind::Compiled;
         } else {
             kind = sampler->code_cache_.classify(pc);
@@ -223,11 +228,30 @@ void Sampler::on_tick(siginfo_t* info, void* ucontext) {
 }
 
 void Sampler::reset_counts() {
+    std::lock_guard<std::mutex> lock(reset_lock_);
+    // No new claims, and no samples counted, until the counters are clear.
+    counters_.suspend();
+    auto release = [this](bool zero_totals) {
+        CompiledMethodMap::ReadGuard guard(*compiled_methods_);
+        compiled_methods_->for_each([zero_totals](CompiledMethod& method) {
+            method.counter_offset.store(CounterArena::UNCLAIMED, std::memory_order_release);
+            if (zero_totals) {
+                method.count.store(0, std::memory_order_relaxed);
+            }
+        });
+    };
+    release(false);
+    // A signal handler that saw claiming as not suspended may still have claimed, or be
+    // counting into counters claimed before, until it releases its ReadGuard.
+    compiled_methods_->synchronize();
+    // Now none can, so this pass catches any claim made since the first, and the totals
+    // can't move.
+    release(true);
+    counters_.clear();
     for (auto& kind_count : kind_counts_) {
         kind_count.store(0, std::memory_order_relaxed);
     }
-    CompiledMethodMap::ReadGuard guard(*compiled_methods_);
-    compiled_methods_->for_each([](CompiledMethod& method) { method.reset_counts(); });
+    counters_.resume();
 }
 
 bool Sampler::start() {

@@ -15,10 +15,14 @@ public final class Sampler {
     // The native storage holding every compiled method's record, read through
     // InstructionProfile flyweights; read-only and only accessed by absolute index, so
     // one view can be shared by all threads. Null if the storage couldn't be reserved.
-    private static final ByteBuffer PROFILES = profileBuffer();
+    private static final ByteBuffer PROFILES = readOnly(profileBuffer0());
 
-    private static ByteBuffer profileBuffer() {
-        ByteBuffer buffer = profileBuffer0();
+    // The native storage holding the per-PC counters of sampled methods, which records
+    // point into; shared the same way. Null if it couldn't be reserved, in which case
+    // profiles have no per-PC counts.
+    private static final ByteBuffer COUNTERS = readOnly(counterBuffer0());
+
+    private static ByteBuffer readOnly(ByteBuffer buffer) {
         return buffer == null ? null : buffer.asReadOnlyBuffer().order(ByteOrder.nativeOrder());
     }
 
@@ -97,7 +101,7 @@ public final class Sampler {
         }
         InstructionProfile profile = new InstructionProfile();
         for (int position = 0, used = (int) profileBytesUsed0(); position < used; position += profile.blockLength()) {
-            profile.wrap(PROFILES, position);
+            profile.wrap(PROFILES, COUNTERS, position);
             if (profile.isLiveAtWrap()) {
                 consumer.accept(profile);
             }
@@ -135,7 +139,7 @@ public final class Sampler {
         TopK top = new TopK(k);
         InstructionProfile profile = new InstructionProfile();
         for (int position = 0, used = (int) profileBytesUsed0(); position < used; position += profile.blockLength()) {
-            profile.wrap(PROFILES, position);
+            profile.wrap(PROFILES, COUNTERS, position);
             if (profile.isLiveAtWrap()) {
                 long total = profile.total();
                 if (total > 0) {
@@ -145,7 +149,7 @@ public final class Sampler {
         }
         top.sortDescending();
         for (int i = 0; i < top.size(); i++) {
-            profile.wrap(PROFILES, top.position(i));
+            profile.wrap(PROFILES, COUNTERS, top.position(i));
             // A different generation means the block now holds another method.
             if (profile.wrappedGeneration() == top.generation(i) && profile.isLiveAtWrap()) {
                 consumer.accept(profile);
@@ -154,11 +158,13 @@ public final class Sampler {
     }
 
     /**
-     * Zeroes all sample counts: per kind, per compiled method and per instruction.
-     * Per-instruction counts saturate at {@link InstructionProfile#MAX_COUNT}, about 11
-     * minutes of samples at a single PC, so continuous profiling should reset well
-     * within that. Safe to call while sampling; samples racing with the reset may be
-     * counted on either side of it.
+     * Starts a new sampling window: zeroes all sample counts, per kind and per compiled
+     * method, and releases the storage for per-instruction counts, which each method
+     * claims again when it is next sampled. Per-instruction counts saturate at
+     * {@link InstructionProfile#MAX_COUNT}, about 11 minutes of samples at a single PC,
+     * so continuous profiling should reset well within that. Safe to call while
+     * sampling: samples in compiled code taken while it runs are dropped, so a method's
+     * total and its per-instruction counts always agree.
      */
     public static void resetCounts() {
         resetCounts0();
@@ -179,6 +185,8 @@ public final class Sampler {
     private static native boolean methodTracking0();
 
     private static native ByteBuffer profileBuffer0();
+
+    private static native ByteBuffer counterBuffer0();
 
     private static native long profileBytesUsed0();
 

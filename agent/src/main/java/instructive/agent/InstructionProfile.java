@@ -41,6 +41,13 @@ import java.util.Optional;
  * {@link #MAX_COUNT}, after which they are a lower bound while {@link #total()} keeps
  * counting.
  *
+ * <p><b>Per-instruction counts</b> are only kept for methods that have been sampled:
+ * most compiled methods never are, so the sampler claims a method's counters on its first
+ * sample, and releases them all when {@link Sampler#resetCounts()} starts a new window.
+ * Until then a profile reads as all zeros. If the counters couldn't be claimed because
+ * their storage was full, {@link #hasMissingCounts()} says so: the method's samples are
+ * in {@link #total()} but not in its counts.
+ *
  * <p><b>Names.</b> A profile doesn't hold its method's name: the sampler keeps each
  * distinct class signature, method name and method signature once, in dictionaries, and
  * a profile holds their codes. {@link #name()} looks the strings up and formats them,
@@ -68,17 +75,17 @@ import java.util.Optional;
  *  48 int   classCode      dictionary code of the declaring class's signature, -1 if unknown
  *  52 int   nameCode       dictionary code of the method's name, -1 if unknown
  *  56 int   signatureCode  dictionary code of the method's signature, -1 if unknown
- *  60 int   (unused)
- *  64 char  counts[profileLength], then padding
+ *  60 int   counterOffset  where the counts are in the counter storage: -1 until the
+ *                          method is sampled, -2 if they couldn't be claimed
  * </pre>
- * Each count covers {@code 1 << pcShift} bytes of code: on AArch64 every instruction is
- * 4 bytes and 4-byte aligned, so one count per instruction slot suffices. There is no
- * stored record length: it is {@link #blockLength(int)} of profileLength, which must
- * match the native {@code CompiledMethod::block_size}, so a record's size depends only
- * on the code it covers. profileLength is at most 65535, so an nmethod is profiled for
- * at most its first 65535 counts. When a method is
+ * Every record is {@value #RECORD_SIZE} bytes. The counts, {@code profileLength} chars,
+ * are in a second buffer, the sampler's counter storage, at {@code counterOffset}; a
+ * snapshot holds them in its own buffer, after its copy of the record. Each count covers
+ * {@code 1 << pcShift} bytes of code: on AArch64 every instruction is 4 bytes and 4-byte
+ * aligned, so one count per instruction slot suffices. profileLength is at most 65535,
+ * so an nmethod is profiled for at most its first 65535 counts. When a method is
  * unloaded its record becomes RETIRED, then FREE, and the block is later reused for
- * another method of the same size class, rewriting it under an odd generation.
+ * another method, rewriting it under an odd generation.
  */
 public final class InstructionProfile {
 
@@ -97,15 +104,20 @@ public final class InstructionProfile {
     static final int CLASS_CODE = 48;
     static final int NAME_CODE = 52;
     static final int SIGNATURE_CODE = 56;
-    static final int HEADER_SIZE = 64;
-    static final int ALIGNMENT = 8;
-    static final int MIN_BLOCK_SIZE = 128;
+    static final int COUNTER_OFFSET = 60;
+    static final int RECORD_SIZE = 64;
+    // Where a snapshot's counts start: after its copy of the record.
+    static final int SNAPSHOT_COUNTS = RECORD_SIZE;
 
     static final int LIVE = 1;
+    static final int MISSING = -2;
 
     private static final VarHandle INT = MethodHandles.byteBufferViewVarHandle(int[].class, ByteOrder.nativeOrder());
 
     private ByteBuffer buffer;
+    // The sampler's counter storage, for a live profile; a snapshot's counts are in its
+    // own buffer.
+    private ByteBuffer counters;
     private int position;
     // The record's generation when this flyweight was positioned on it.
     private int wrappedGeneration;
@@ -119,9 +131,13 @@ public final class InstructionProfile {
         this.wrappedGeneration = copy.getInt(GENERATION);
     }
 
-    /** Points this flyweight at the record starting at {@code position}. */
-    void wrap(ByteBuffer buffer, int position) {
+    /**
+     * Points this flyweight at the record starting at {@code position}, whose counts are
+     * in {@code counters} (null if the counter storage couldn't be reserved).
+     */
+    void wrap(ByteBuffer buffer, ByteBuffer counters, int position) {
         this.buffer = buffer;
+        this.counters = counters;
         this.position = position;
         this.wrappedGeneration = generation();
     }
@@ -133,27 +149,7 @@ public final class InstructionProfile {
 
     /** The record's size in bytes: the distance to the next record. */
     int blockLength() {
-        return blockLength(counters());
-    }
-
-    /**
-     * The size of the block holding a record with this many counts: header and counts,
-     * padded to 8 bytes, then rounded up to a size class (eight per power of two). Must
-     * match the native {@code CompiledMethod::block_size}.
-     */
-    static int blockLength(int profileLength) {
-        int bytes = recordLength(profileLength);
-        if (bytes <= MIN_BLOCK_SIZE) {
-            return MIN_BLOCK_SIZE;
-        }
-        int step = Integer.highestOneBit(bytes) >>> 3;
-        return (bytes + step - 1) & -step;
-    }
-
-    // Header and counts, padded: the part of the block in use.
-    private static int recordLength(int profileLength) {
-        int bytes = HEADER_SIZE + profileLength * Character.BYTES;
-        return (bytes + ALIGNMENT - 1) & -ALIGNMENT;
+        return RECORD_SIZE;
     }
 
     // The number of counts, as stored.
@@ -170,6 +166,39 @@ public final class InstructionProfile {
 
     private int state() {
         return buffer.hasArray() ? buffer.getInt(position + STATE) : (int) INT.getAcquire(buffer, position + STATE);
+    }
+
+    // The record's counter offset, read with acquire semantics so the counts it points
+    // at are visible.
+    private int counterOffset() {
+        return buffer.hasArray()
+                ? buffer.getInt(position + COUNTER_OFFSET)
+                : (int) INT.getAcquire(buffer, position + COUNTER_OFFSET);
+    }
+
+    // Where the counts start in countsBuffer(), or -1 if the method has none (yet).
+    private int countsAt() {
+        if (buffer.hasArray()) {
+            return SNAPSHOT_COUNTS;
+        }
+        int offset = counterOffset();
+        return offset >= 0 && counters != null ? offset : -1;
+    }
+
+    private ByteBuffer countsBuffer() {
+        return buffer.hasArray() ? buffer : counters;
+    }
+
+    /**
+     * Whether some of the method's samples aren't in its per-instruction counts: its
+     * counters couldn't be claimed when it was first sampled in this window, because the
+     * counter storage was full, so {@link #total()} counts samples its counts don't. Not
+     * a problem for a method that isn't among the hottest; for one that is, the counter
+     * storage needs to be bigger ({@code -Dinstructive.counterCapacity}, in bytes) or
+     * reset more often. Cleared by {@link Sampler#resetCounts()}.
+     */
+    public boolean hasMissingCounts() {
+        return counterOffset() == MISSING;
     }
 
     /**
@@ -204,18 +233,29 @@ public final class InstructionProfile {
             return this;
         }
         int generation = wrappedGeneration;
-        int length = recordLength(counters());
-        if (generation() != generation) {
-            throw reused();
+        for (int attempt = 0; ; attempt++) {
+            int length = counters() * Character.BYTES;
+            int offset = counterOffset();
+            if (generation() != generation) {
+                throw reused();
+            }
+            ByteBuffer copy = ByteBuffer.allocate(SNAPSHOT_COUNTS + length).order(ByteOrder.nativeOrder());
+            copy.put(0, buffer, position, RECORD_SIZE);
+            if (offset >= 0 && counters != null) {
+                copy.put(SNAPSHOT_COUNTS, counters, offset, length);
+            }
+            // A rewrite during the copy changes the generation, so the copy is consistent if
+            // the generation is unchanged after it.
+            if (generation() != generation) {
+                throw reused();
+            }
+            // So does the counter offset if the method was first sampled, or the counters
+            // released, during the copy: copy again, so the counts and the rest agree.
+            if (counterOffset() == offset || attempt == 3) {
+                copy.putInt(COUNTER_OFFSET, offset);
+                return new InstructionProfile(copy);
+            }
         }
-        ByteBuffer copy = ByteBuffer.allocate(length).order(ByteOrder.nativeOrder());
-        copy.put(0, buffer, position, length);
-        // A rewrite during the copy changes the generation, so the copy is consistent if
-        // the generation is unchanged after it.
-        if (generation() != generation) {
-            throw reused();
-        }
-        return new InstructionProfile(copy);
     }
 
     private static ConcurrentModificationException reused() {
@@ -273,10 +313,11 @@ public final class InstructionProfile {
      */
     public char count(int offset) {
         int shift = pcShift();
-        if ((offset & ((1 << shift) - 1)) != 0) {
+        int at = countsAt();
+        if ((offset & ((1 << shift) - 1)) != 0 || at < 0) {
             return 0;
         }
-        return buffer.getChar(position + HEADER_SIZE + (offset >> shift) * Character.BYTES);
+        return countsBuffer().getChar(at + (offset >> shift) * Character.BYTES);
     }
 
     /**
@@ -286,13 +327,18 @@ public final class InstructionProfile {
      * {@code [0, profileLength() / bytesPerCount())}. For a profile passed to a
      * {@code forEachMethod} consumer, it views the live counts, which keep changing
      * while the sampler runs, and like the profile it may not be used after the consumer
-     * returns. For a snapshot, it views the copy. Allocates the view on each call.
+     * returns; if the method hasn't been sampled in this window, it is a buffer of
+     * zeros, which doesn't change. For a snapshot, it views the copy. Allocates the view
+     * on each call.
      */
     public CharBuffer counts() {
+        int at = countsAt();
+        int length = counters();
+        if (at < 0) {
+            return CharBuffer.allocate(length);
+        }
         // slice() resets the byte order, so set it before taking the char view.
-        return buffer.slice(position + HEADER_SIZE, counters() * Character.BYTES)
-                .order(ByteOrder.nativeOrder())
-                .asCharBuffer();
+        return countsBuffer().slice(at, length * Character.BYTES).order(ByteOrder.nativeOrder()).asCharBuffer();
     }
 
     /**
@@ -325,10 +371,14 @@ public final class InstructionProfile {
 
     /** The sum of the per-PC counts. */
     public long sampled() {
+        int at = countsAt();
+        if (at < 0) {
+            return 0;
+        }
+        ByteBuffer counts = countsBuffer();
         long sum = 0;
-        int counts = position + HEADER_SIZE;
         for (int i = 0, length = counters(); i < length; i++) {
-            sum += buffer.getChar(counts + i * Character.BYTES);
+            sum += counts.getChar(at + i * Character.BYTES);
         }
         return sum;
     }

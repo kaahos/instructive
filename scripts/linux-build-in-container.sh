@@ -16,7 +16,7 @@ copy_reports() {
 }
 trap copy_reports EXIT
 ./gradlew --no-daemon --no-watch-fs --console=plain "$@"
-results=$(find /work -path '*/test-results/test/*.xml' -exec cat {} + 2>/dev/null || true)
+results=$(find /work -path '*/test-results/*/*.xml' -exec cat {} + 2>/dev/null || true)
 echo "tests: $(grep -c '<testcase' <<< "$results" || true), skipped: $(grep -c '<skipped' <<< "$results" || true)"
 grep -B1 '<skipped' <<< "$results" | grep -o 'testcase name="[^"]*" classname="[^"]*"' \
     | sed -E 's/testcase name="([^"]*)" classname="([^"]*)"/  skipped: \2.\1/' || true

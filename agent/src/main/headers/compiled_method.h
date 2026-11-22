@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <jni.h>
 
+#include "counter_arena.h"
+
 namespace instructive {
 
 // A compiled method as reported by JVMTI CompiledMethodLoad, stored in a block of the
@@ -13,7 +15,7 @@ namespace instructive {
 // fixed-width fields and the static_asserts below. Native-only fields are part of the
 // layout too, so Java knows to skip them.
 //
-//    0 u32 profile_length  counters in pc_counts (at most MAX_LENGTH)
+//    0 u32 profile_length  the number of per-PC counters the method has (at most MAX_LENGTH)
 //    4 u32 generation      odd while the block is being (re)initialised
 //    8 u64 code_begin      start of the instructions JVMTI reported
 //   16 u64 count           samples anywhere in the mapped range
@@ -30,24 +32,23 @@ namespace instructive {
 //   52 u32 name_code       the method's name and
 //   56 u32 signature_code  its signature ("(I)V"), each as a StringDictionary code, or
 //                          StringDictionary::NO_CODE if JVMTI couldn't describe it
-//   60 u32 (unused)
-//   64 u16 pc_counts[profile_length], then padding to 8 bytes
+//   60 i32 counter_offset  where the per-PC counters are in the CounterArena:
+//                          CounterArena::UNCLAIMED until the method's first sample,
+//                          CounterArena::MISSING if they couldn't be claimed
 //
-// Names are held once each in the Sampler's dictionaries, not in the record, so a
-// record's size depends only on the code it covers. There is no block length: it is
-// block_size(profile_length), which readers compute. That holds because a freed block
-// is only reused for a record of the same size class, so a reader racing a reuse
-// derives the same length from the old or the new profile_length.
+// Every record is SIZE bytes. Names are held once each in the Sampler's dictionaries,
+// and per-PC counters only exist for methods that have been sampled, in the
+// CounterArena, so both are found from the record rather than held in it.
 //
-// pc_counts covers [code_begin, code_begin + (profile_length << PC_SHIFT)): the
+// The counters cover [code_begin, code_begin + (profile_length << PC_SHIFT)): the
 // instructions and the stubs after them, with one counter per possible instruction
 // start. On AArch64 every instruction is 4 bytes and 4-byte aligned, so a counter covers
 // 4 bytes and the PC's offset is divided by 4; elsewhere (x86 instructions vary in
-// length) a counter covers one byte. profile_length and code_size are 16 bits, so an
-// nmethod is mapped and profiled for at most 65535 counters from code_begin (256 KiB of
-// code on AArch64, 64 KiB elsewhere), and its code size saturates at 65535 bytes;
-// samples beyond the profile count as stubs. Counters saturate at MAX_PC_COUNT, about
-// 11 minutes of samples at one PC at 10ms.
+// length) a counter covers one byte. profile_length is at most 65535 and code_size is 16
+// bits, so an nmethod is mapped and profiled for at most 65535 counters from code_begin
+// (256 KiB of code on AArch64, 64 KiB elsewhere), and its code size saturates at 65535
+// bytes; samples beyond the profile count as stubs. Counters saturate at MAX_PC_COUNT,
+// about 11 minutes of samples at one PC at 10ms.
 //
 // state goes FREE -> LIVE when the method is inserted into the map, LIVE -> RETIRED
 // when a thread takes responsibility for unlinking and freeing it (retire()), and back
@@ -58,16 +59,14 @@ struct CompiledMethod {
     static constexpr uint32_t RETIRED = 2;
     static constexpr uint16_t MAX_PC_COUNT = UINT16_MAX;
     static constexpr size_t MAX_LENGTH = UINT16_MAX;
-    static constexpr size_t HEADER_SIZE = 64;
-    static constexpr size_t ALIGNMENT = 8;
-    static constexpr size_t MIN_BLOCK_SIZE = 128;
+    static constexpr size_t SIZE = 64;
 #if defined(__aarch64__)
     static constexpr int PC_SHIFT = 2;
 #else
     static constexpr int PC_SHIFT = 0;
 #endif
 
-    std::atomic<uint32_t> profile_length_;  // atomic: readers derive the block size from it
+    std::atomic<uint32_t> profile_length_;
     std::atomic<uint32_t> generation;
     uint64_t code_begin;
     std::atomic<uint64_t> count;
@@ -81,24 +80,9 @@ struct CompiledMethod {
     uint32_t class_code;
     uint32_t name_code;
     uint32_t signature_code;
-    uint32_t unused;
-
-    // The size of the block holding a record with this many counters: header and
-    // counts, padded to ALIGNMENT, then rounded up to a size class (eight per power of
-    // two, so at most 12.5% over). Must match InstructionProfile.blockLength.
-    static size_t block_size(size_t profile_length) {
-        size_t bytes = HEADER_SIZE + profile_length * sizeof(uint16_t);
-        bytes = (bytes + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
-        if (bytes <= MIN_BLOCK_SIZE) {
-            return MIN_BLOCK_SIZE;
-        }
-        int log2 = 63 - __builtin_clzll(static_cast<unsigned long long>(bytes));
-        size_t step = size_t{1} << (log2 - 3);
-        return (bytes + step - 1) & ~(step - 1);
-    }
+    std::atomic<int32_t> counter_offset;
 
     uint32_t profile_length() const { return profile_length_.load(std::memory_order_relaxed); }
-    size_t block_length() const { return block_size(profile_length()); }
 
     uint64_t code_end() const { return code_begin + code_size; }
     uint64_t range_begin() const { return code_begin - header_offset; }
@@ -116,34 +100,23 @@ struct CompiledMethod {
         return state.compare_exchange_strong(expected, RETIRED);
     }
 
-    std::atomic<uint16_t>* pc_counts() {
-        return reinterpret_cast<std::atomic<uint16_t>*>(reinterpret_cast<char*>(this) + HEADER_SIZE);
-    }
-    const std::atomic<uint16_t>* pc_counts() const {
-        return reinterpret_cast<const std::atomic<uint16_t>*>(reinterpret_cast<const char*>(this) + HEADER_SIZE);
-    }
-
-    // Async-signal-safe.
-    void record_sample(uintptr_t pc) {
+    // Counts a sample at `pc`: in the total, and in the PC's counter, claiming the
+    // method's counters from `counters` on its first sample. If they can't be claimed the
+    // record is marked MISSING and only the total counts. Async-signal-safe.
+    void record_sample(uintptr_t pc, CounterArena& counters) {
         count.fetch_add(1, std::memory_order_relaxed);
-        uint64_t offset = (pc - code_begin) >> PC_SHIFT;
-        if (pc >= code_begin && offset < profile_length()) {
-            std::atomic<uint16_t>& pc_count = pc_counts()[offset];
-            uint16_t current = pc_count.load(std::memory_order_relaxed);
-            while (current != MAX_PC_COUNT &&
-                   !pc_count.compare_exchange_weak(current, static_cast<uint16_t>(current + 1),
-                                                   std::memory_order_relaxed)) {
-            }
+        uint64_t index = (pc - code_begin) >> PC_SHIFT;
+        if (pc < code_begin || index >= profile_length()) {
+            return;
         }
-    }
-
-    // Zeroes the total and per-PC counts. Samples racing with the reset may land on
-    // either side of it.
-    void reset_counts() {
-        count.store(0, std::memory_order_relaxed);
-        std::atomic<uint16_t>* counts = pc_counts();
-        for (uint32_t i = 0, length = profile_length(); i < length; ++i) {
-            counts[i].store(0, std::memory_order_relaxed);
+        int32_t offset = counters.counters(counter_offset, profile_length());
+        if (offset < 0) {
+            return;
+        }
+        std::atomic<uint16_t>& pc_count = counters.at(offset)[index];
+        uint16_t current = pc_count.load(std::memory_order_relaxed);
+        while (current != MAX_PC_COUNT &&
+               !pc_count.compare_exchange_weak(current, static_cast<uint16_t>(current + 1), std::memory_order_relaxed)) {
         }
     }
 };
@@ -163,10 +136,10 @@ static_assert(offsetof(CompiledMethod, pc_shift) == 47, "layout");
 static_assert(offsetof(CompiledMethod, class_code) == 48, "layout");
 static_assert(offsetof(CompiledMethod, name_code) == 52, "layout");
 static_assert(offsetof(CompiledMethod, signature_code) == 56, "layout");
-static_assert(sizeof(CompiledMethod) == CompiledMethod::HEADER_SIZE, "header size");
-static_assert(sizeof(std::atomic<uint16_t>) == 2 &&
+static_assert(offsetof(CompiledMethod, counter_offset) == 60, "layout");
+static_assert(sizeof(CompiledMethod) == CompiledMethod::SIZE, "record size");
+static_assert(sizeof(std::atomic<uint16_t>) == 2 && sizeof(std::atomic<int32_t>) == 4 &&
                   sizeof(std::atomic<uint32_t>) == 4 && sizeof(std::atomic<uint64_t>) == 8,
               "atomics must have the size of the values Java reads");
-static_assert(CompiledMethod::MIN_BLOCK_SIZE % CompiledMethod::ALIGNMENT == 0, "blocks stay aligned");
 
 }  // namespace instructive
