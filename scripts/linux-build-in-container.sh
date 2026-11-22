@@ -14,7 +14,20 @@ copy_reports() {
         done
     fi
 }
-trap copy_reports EXIT
+# Leave the Gradle home fit for caching (CI caches it with actions/cache): drop the
+# files that change on every run, as Gradle's own docs advise, and let the runner's
+# user read what root wrote.
+tidy_gradle_home() {
+    rm -f /root/.gradle/caches/modules-2/modules-2.lock /root/.gradle/caches/modules-2/gc.properties
+    find /root/.gradle/caches -name '*.lock' -delete 2>/dev/null || true
+    rm -rf /root/.gradle/daemon
+    chmod -R a+rX /root/.gradle 2>/dev/null || true
+}
+on_exit() {
+    copy_reports
+    tidy_gradle_home
+}
+trap on_exit EXIT
 ./gradlew --no-daemon --no-watch-fs --console=plain "$@"
 results=$(find /work -path '*/test-results/*/*.xml' -exec cat {} + 2>/dev/null || true)
 echo "tests: $(grep -c '<testcase' <<< "$results" || true), skipped: $(grep -c '<skipped' <<< "$results" || true)"

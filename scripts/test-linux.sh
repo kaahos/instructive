@@ -11,8 +11,11 @@
 # $OUT/META-INF/native-libs/<platform>/; if REPORTS is set, test reports are copied there.
 #
 # The repository is mounted read-only and copied inside the container without its
-# build outputs, so Linux and host builds never mix. Gradle's caches persist in a
-# Docker volume per distribution and architecture. CI runs this same script.
+# build outputs, so Linux and host builds never mix. Gradle's home (its caches, and the
+# Gradle distribution) persists in a Docker volume per distribution and architecture,
+# or, if GRADLE_CACHE is set, in the host directory $GRADLE_CACHE/<distro>-<arch>, which
+# CI saves and restores between runs so the jobs don't all download their dependencies
+# again. CI runs this same script.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -49,10 +52,16 @@ for arch in "${architectures[@]}"; do
     echo "=== $name: building image"
     "$docker" build --quiet --platform "linux/$arch" --target "$distro" --build-arg "JDK=$jdk" \
         -t "$image" -f "$root/docker/linux-build.Dockerfile" "$root/docker" > /dev/null
+    if [[ -n "${GRADLE_CACHE:-}" ]]; then
+        mkdir -p "$GRADLE_CACHE/$distro-$arch"
+        gradle_home="$(cd "$GRADLE_CACHE/$distro-$arch" && pwd)"
+    else
+        gradle_home="instructive-gradle-$distro-$arch"
+    fi
     echo "=== $name: ./gradlew ${tasks[*]}"
     if ! "$docker" run --rm --platform "linux/$arch" \
         -v "$root:/src:ro" \
-        -v "instructive-gradle-$distro-$arch:/root/.gradle" \
+        -v "$gradle_home:/root/.gradle" \
         ${mounts[@]+"${mounts[@]}"} \
         "$image" /src/scripts/linux-build-in-container.sh "${tasks[@]}"; then
         echo "=== $name: FAILED"
