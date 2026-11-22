@@ -22,7 +22,12 @@ import java.util.List;
  *                        within an iteration, such as a node's fields and the objects they
  *                        point to, in address order
  * @param samples         the samples taken on the loop's instructions
- * @param chaseSamples    the samples taken on the cycle and the dereferences
+ * @param chaseSamples    the samples taken on the cycle and on every instruction in the
+ *                        loop that depends on it within an iteration: the dereferences
+ *                        and whatever uses what they load. A stalled load's samples often
+ *                        land on the instruction waiting for it rather than on the load
+ *                        (skid), and how far depends on the CPU, so the consumers count
+ *                        too.
  */
 public record PointerChase(
         long loopHeader, String carriedRegister, List<Instruction> cycle, List<Instruction> loads,

@@ -734,7 +734,12 @@ moves on the way are part of the cycle. For each, it reports:
 - the cycle and the loads on it, one per step of the chase;
 - the dereferences: the other loads in the loop whose address comes from the chase,
   such as the `item`, class word and `value` loads above;
-- the loop's samples, and the samples on the chase and its dereferences.
+- the loop's samples, and the samples on the chase and everything in the loop that
+  depends on it: the dereferences, and the instructions using what they load. A stalled
+  load's samples often land on the instruction waiting for it instead (skid), and how
+  far depends on the CPU: on one CI runner's Neoverse cores, 20 of this loop's samples
+  were on the `cmp` after the first class word's load, where the M2 puts them on the
+  load itself.
 
 Loops with less than 10% of the method's samples, like the one-node loop C2 adds to
 finish an odd count, aren't reported. For the Linux profile above:
@@ -748,7 +753,7 @@ chase.carriedRegister();  // x16
 chase.cycle();            // ldr w17, [x16, #0x10]; ldr w16, [x17, #0x10]
 chase.dereferences();     // 6 loads: each node's item, its class and its value
 chase.samples();          // 98, the loop's
-chase.chaseSamples();     // 88 of them on the chase and its dereferences
+chase.chaseSamples();     // 92 of them on the chase and what depends on it: all but the counter's
 ```
 
 The `ArrayList` loop has no finding: its recurrences are the sum and the index, neither

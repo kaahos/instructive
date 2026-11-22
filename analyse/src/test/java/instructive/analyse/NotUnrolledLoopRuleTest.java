@@ -110,6 +110,18 @@ class NotUnrolledLoopRuleTest {
     }
 
     @Test
+    void leavesALoopVectorisedWithSveAlone() {
+        // The same loop on a CPU with SVE (from a CI runner): 4 copies of an SVE add per
+        // iteration, 16 elements, after a ptrue in the prologue.
+        Listing method = Listing.load("add-sve.tsv");
+        assertTrue(method.code().stream().filter(i -> i.kind() == InstructionKind.SIMD).count() >= 16);
+        assertFalse(ControlFlowGraph.of(method.code()).loops().isEmpty());
+        assertTrue(new NotUnrolledLoopRule().apply(method.code(), registers, method::count).isEmpty());
+        // Without the samples, the pre-loop and post-loop, one element per iteration, are found.
+        assertEquals(2, new NotUnrolledLoopRule().apply(method.code(), registers).size());
+    }
+
+    @Test
     void leavesUnrolledRecurrencesAlone() {
         assertTrue(new NotUnrolledLoopRule().apply(Listing.decode(LongDependencyChainRuleTest.HASH_LOOP), registers).isEmpty());
         assertTrue(new NotUnrolledLoopRule().apply(Listing.decode(LongDependencyChainRuleTest.DELTA_LOOP), registers).isEmpty());
