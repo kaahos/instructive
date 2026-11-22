@@ -56,6 +56,17 @@ class Aarch64DisassemblerTest {
     }
 
     @Test
+    void classifiesSve() {
+        // From C2's code on a CPU with SVE: ptrue p7.b, ld1w {z16.s}, p7/z, [x14, #1, mul vl],
+        // add z16.s, z16.s, z17.s and st1w {z16.s}, p7, [x13, #1, mul vl].
+        for (int word : new int[] {0x2518e3e7, 0xa541bdd0, 0x04b10210, 0xe541fdb0}) {
+            Instruction sve = disassembler.decode(word, 0);
+            assertEquals(InstructionKind.SIMD, sve.kind(), sve::text);
+            assertFalse(sve.isDecoded());
+        }
+    }
+
+    @Test
     void resolvesPageAddresses() {
         // adrp x0, 0x4000 from 0x1b8: the page base plus four pages.
         Instruction adrp = disassembler.decode(0x90000020, 0x1b8);

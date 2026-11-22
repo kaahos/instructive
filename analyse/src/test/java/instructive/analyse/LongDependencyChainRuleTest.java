@@ -2,10 +2,12 @@ package instructive.analyse;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import instructive.parse.Instruction;
+import instructive.parse.InstructionKind;
 import instructive.parse.aarch64.Aarch64Disassembler;
 import instructive.parse.aarch64.Aarch64RegisterModel;
 import java.util.ArrayList;
@@ -189,6 +191,21 @@ class LongDependencyChainRuleTest {
         List<Instruction> instructions = decode("20 84 40 f8", "20 84 40 f8", "20 84 40 f8", "20 84 40 f8");
         DependencyGraph graph = DependencyGraph.of(instructions, registers);
         assertEquals(4, graph.chainLength(3));
+    }
+
+    @Test
+    void undecodedInstructionsDontEndControlFlow() {
+        // An instruction the disassembler doesn't know, at the start of the hash loop's
+        // method, mustn't make the loop unreachable.
+        String[] withUnknown = new String[HASH_LOOP.length + 1];
+        withUnknown[0] = "00 00 00 02"; // 0x02000000, in an unallocated encoding space
+        System.arraycopy(HASH_LOOP, 0, withUnknown, 1, HASH_LOOP.length);
+        List<Instruction> instructions = decode(withUnknown);
+        assertFalse(instructions.get(0).isDecoded());
+        assertEquals(InstructionKind.UNKNOWN, instructions.get(0).kind());
+        ControlFlowGraph controlFlow = ControlFlowGraph.of(instructions);
+        assertEquals(1, controlFlow.loops().size());
+        assertEquals(1, new LongDependencyChainRule().apply(instructions, registers).size());
     }
 
     @Test

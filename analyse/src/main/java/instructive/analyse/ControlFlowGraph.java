@@ -18,9 +18,11 @@ import java.util.Map;
  *
  * <p>A block starts at the first instruction, at every branch target inside the method
  * and after every branch. A conditional branch continues at its target and at the next
- * instruction; an unconditional branch only at its target. Returns, indirect branches,
- * traps ({@link InstructionKind#EXCEPTION}) and undecodable words end a path; a branch
- * out of the method leaves it. Calls return, so they don't end a block.
+ * instruction; an unconditional branch only at its target. Returns, indirect branches and
+ * traps ({@link InstructionKind#EXCEPTION}) end a path; a branch out of the method leaves
+ * it. Calls return, so they don't end a block, and neither do words the disassembler
+ * can't decode: in compiled code they are instructions it doesn't know (such as vector
+ * extensions it doesn't classify), and data only ever follows a path's end.
  *
  * <p>Blocks are numbered in address order. {@link #reversePostorder()} orders them so
  * that, apart from loop back-edges, control only flows forward. Loops are the natural
@@ -168,14 +170,14 @@ public final class ControlFlowGraph {
 
     private static boolean endsBlock(Instruction instruction) {
         return switch (instruction.kind()) {
-            case BRANCH, CONDITIONAL_BRANCH, INDIRECT_BRANCH, RETURN, EXCEPTION, UNKNOWN -> true;
+            case BRANCH, CONDITIONAL_BRANCH, INDIRECT_BRANCH, RETURN, EXCEPTION -> true;
             default -> false;
         };
     }
 
     private static boolean fallsThrough(Instruction instruction) {
         return switch (instruction.kind()) {
-            case BRANCH, INDIRECT_BRANCH, RETURN, EXCEPTION, UNKNOWN -> false;
+            case BRANCH, INDIRECT_BRANCH, RETURN, EXCEPTION -> false;
             default -> true;
         };
     }

@@ -29,8 +29,8 @@ import java.util.OptionalLong;
  * A decoder for the A64 instructions that JIT compilers commonly emit: integer
  * arithmetic and logic, moves, bitfield operations, loads and stores (including pairs,
  * exclusives, acquire/release and LSE atomics), branches, barriers, hints, system
- * register access and scalar floating point. Vector SIMD instructions are classified as
- * {@link InstructionKind#SIMD} but not decoded.
+ * register access and scalar floating point. Vector SIMD instructions, Advanced SIMD and
+ * SVE, are classified as {@link InstructionKind#SIMD} but not decoded.
  *
  * <p>Text follows LLVM's disassembler, so it can be checked against
  * {@code llvm-objdump}: preferred aliases ({@code mov}, {@code cmp}, {@code lsl},
@@ -121,6 +121,8 @@ public final class Aarch64Disassembler implements Disassembler {
                 case 0b0100, 0b0110, 0b1100, 0b1110 -> loadsAndStores();
                 case 0b0101, 0b1101 -> dataProcessingRegister();
                 case 0b0111, 0b1111 -> floatingPointAndSimd();
+                // SVE, which C2 uses for vectors where the CPU has it: classified, not decoded.
+                case 0b0010 -> unknown(SIMD);
                 case 0b0000 -> field(16, 16) == 0 ? of("udf", uimm(field(0, 16)), EXCEPTION) : unknown(UNKNOWN);
                 default -> unknown(UNKNOWN);
             };
