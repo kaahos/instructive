@@ -56,7 +56,18 @@ jobs:
       REPORTS: ${{ github.workspace }}/out/reports
     steps:
       - uses: actions/checkout@v7
+      # The container's Gradle home, so the jobs don't each download the dependencies
+      # from Maven Central, which rate-limits busy shared runners (429). The JDK jobs of
+      # one distribution and architecture share it.
+      - name: Cache the container's Gradle home
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/gradle/${{ matrix.distro }}-${{ matrix.arch }}
+          key: gradle-${{ matrix.distro }}-${{ matrix.arch }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ matrix.distro }}-${{ matrix.arch }}-
       - name: Test
+        env:
+          GRADLE_CACHE: ${{ runner.temp }}/gradle
         run: scripts/test-linux.sh ${{ matrix.arch }} :agent-test:test
       - name: Upload test reports
         if: failure()
