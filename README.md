@@ -155,6 +155,7 @@ model and the samples per instruction, and returns its findings hottest first.
 | `FailedCheckRule` | explicit range checks that throw, or that a loop kept: out-of-bounds indexes have been seen there, or the loop isn't counted | [Finding range checks that have failed](#finding-range-checks-that-have-failed) |
 | `UnpredictableBranchRule` | hot loops branching on the data they load, whose samples land where mispredicted branches' would | [Finding unpredictable branches](#finding-unpredictable-branches) |
 | `MegamorphicCallRule` | virtual and interface calls dispatching through a vtable or itable stub, whose cost the agent attributes to the call | [Finding megamorphic calls](#finding-megamorphic-calls) |
+| `MissedVectorisationRule` | unrolled loops whose copies do the same scalar operations on adjacent elements, which C2 didn't vectorise, often because two arrays might overlap | [Finding missed vectorisation](#finding-missed-vectorisation) |
 
 ## Finding long dependency chains
 
@@ -1341,6 +1342,141 @@ On JDK 17, 21 and 25 the call had 70-85% of its loop's samples (11 of 13, 7 of 1
 18 in the recorded listings). The loops over one and two types have no finding. The rule
 reports calls outside loops too, with `loopHeader` -1: a hot megamorphic call matters
 wherever the loop driving it is.
+
+## Finding missed vectorisation
+
+C2 vectorises a loop in its superword pass, which works on the unrolled loop: it looks
+for copies of the same operations on adjacent elements and packs them into vector
+instructions. It does that only if it can prove the copies independent: a store in one
+copy mustn't change what a later copy loads. Two arrays of the same type might be the
+same array, so when they're indexed at offsets C2 can't compare, it has to assume a
+store to one may overlap a load from the other, and the copies stay scalar. The loop is
+unrolled, so [Finding loops that aren't unrolled](#finding-loops-that-arent-unrolled)
+has nothing to say about it, but each iteration does one element's work per copy where
+a vector instruction would do two or more.
+
+### DAXPY, with and without offsets
+
+```java
+static void daxpy(double a, double[] x, double[] y) {
+    for (int i = 0; i < y.length; i++) {
+        y[i] += a * x[i];
+    }
+}
+
+static void daxpyWithOffsets(double a, double[] x, int xOffset, double[] y, int yOffset, int n) {
+    for (int i = 0; i < n; i++) {
+        y[yOffset + i] += a * x[xOffset + i];
+    }
+}
+```
+
+On 4,096-element arrays, with `daxpyWithOffsets` called with offsets 1 and 0, on an
+Apple M2 (best of 20 rounds):
+
+| | JDK 17 (Linux) | JDK 21 (Linux) | JDK 25 (Linux) | JDK 25 (macOS) |
+|---|---|---|---|---|
+| `daxpy` | 0.136 ns/element | 0.123 | 0.128 | 0.119 |
+| `daxpyWithOffsets(a, x, 1, y, 0, n)` | 0.282 ns/element | 0.301 | 0.314 | 0.297 |
+| `daxpyWithOffsets(a, x, 0, y, 0, n)` | 0.271 ns/element | 0.300 | 0.312 | 0.296 |
+| `y[i] += a * x[i + 1]` | 0.249 ns/element | 0.242 | 0.132 | 0.123 |
+
+Offsets of 0 don't help: C2 compiles the method once for any offsets, so the
+code can't depend on their values. A constant offset is different: C2 can compare
+`x[i + 1]` with `y[i]`, and JDK 25 vectorises that loop. JDK 17 and 21 don't, because
+their superword pass also needs the loads aligned with the stores.
+
+`daxpy` loads and stores two doubles at a time (`ldr q`, `str q`). `daxpyWithOffsets` is
+unrolled four times, and each copy loads `x` and `y`, multiplies, adds and stores one
+double. Its main loop on JDK 25 (Linux):
+
+```
+MissedVectorisationTest.daxpyWithOffsets(D[DI[DII)V
+  tier 4 (C2), compile id 1689, 544 bytes at 0x0000ffff93fb01c0, 99 samples
+
+  pc                  bytes        instruction                     count        %
+  ...
+  0x0000ffff93fb02a0  4f 7d 40 93  sxtw x15, w10
+  0x0000ffff93fb02a4  30 02 0f 8b  add x16, x17, x15
+  0x0000ffff93fb02a8  30 6c 30 8b  add x16, x1, x16, uxtx #3
+  0x0000ffff93fb02ac  10 0a 40 fd  ldr d16, [x16, #0x10]
+  0x0000ffff93fb02b0  cf 01 0f 8b  add x15, x14, x15
+  0x0000ffff93fb02b4  6f 6c 2f 8b  add x15, x3, x15, uxtx #3
+  0x0000ffff93fb02b8  f1 09 40 fd  ldr d17, [x15, #0x10]
+  0x0000ffff93fb02bc  10 0a 60 1e  fmul d16, d16, d0
+  0x0000ffff93fb02c0  10 2a 71 1e  fadd d16, d16, d17
+  0x0000ffff93fb02c4  f0 09 00 fd  str d16, [x15, #0x10]
+  0x0000ffff93fb02c8  10 0e 40 fd  ldr d16, [x16, #0x18]
+  0x0000ffff93fb02cc  f1 0d 40 fd  ldr d17, [x15, #0x18]
+  0x0000ffff93fb02d0  10 0a 60 1e  fmul d16, d16, d0
+  0x0000ffff93fb02d4  10 2a 71 1e  fadd d16, d16, d17
+  0x0000ffff93fb02d8  f0 0d 00 fd  str d16, [x15, #0x18]
+  0x0000ffff93fb02dc  10 12 40 fd  ldr d16, [x16, #0x20]              20   20.20%
+  0x0000ffff93fb02e0  f1 11 40 fd  ldr d17, [x15, #0x20]               8    8.08%
+  0x0000ffff93fb02e4  10 0a 60 1e  fmul d16, d16, d0
+  0x0000ffff93fb02e8  10 2a 71 1e  fadd d16, d16, d17
+  0x0000ffff93fb02ec  f0 11 00 fd  str d16, [x15, #0x20]               1    1.01%
+  0x0000ffff93fb02f0  50 00 0a 0b  add w16, w2, w10
+  0x0000ffff93fb02f4  2f cc 30 8b  add x15, x1, w16, sxtw #3
+  0x0000ffff93fb02f8  f0 15 40 fd  ldr d16, [x15, #0x28]              14   14.14%
+  0x0000ffff93fb02fc  8f 00 0a 0b  add w15, w4, w10
+  0x0000ffff93fb0300  6f cc 2f 8b  add x15, x3, w15, sxtw #3           2    2.02%
+  0x0000ffff93fb0304  f1 15 40 fd  ldr d17, [x15, #0x28]               1    1.01%
+  0x0000ffff93fb0308  10 0a 60 1e  fmul d16, d16, d0
+  0x0000ffff93fb030c  4a 11 00 11  add w10, w10, #0x4
+  0x0000ffff93fb0310  10 2a 71 1e  fadd d16, d16, d17
+  0x0000ffff93fb0314  f0 15 00 fd  str d16, [x15, #0x28]              53   53.54%
+  0x0000ffff93fb0318  5f 01 0c 6b  cmp w10, w12
+  0x0000ffff93fb031c  2b fc ff 54  b.lt 0xffff93fb02a0 <+0xe0>
+  ...
+```
+
+Four copies of `ldr d`, `ldr d`, `fmul`, `fadd`, `str d`, each 8 bytes further on
+(`#0x10`, `#0x18`, `#0x20`, `#0x28`), with `a` in `d0` shared by all of them. The last
+copy computes its addresses again from the offsets (`w2`, `w4`), but still at the next
+element. Each copy loads after the copy before it stored. If `x` and `y` were one array
+with `xOffset = yOffset - 1`, copy 2's load of `x` would read the element copy 1 had just
+stored, making the loop `y[j] += a * y[j - 1]`, a recurrence. That is the dependence C2
+can't rule out.
+
+### The rule
+
+`MissedVectorisationRule` looks for the copies a superword pass would pack, starting from
+the stores, as superword does. In each innermost loop with at least 10% of the method's
+samples and no SIMD instructions, it follows each plain store's data register back
+through the iteration to the expression computing it, made of loads, values from outside
+the loop (`d0`), and operations with vector equivalents: floating-point arithmetic and
+conversions, integer add, subtract, logic, shifts and extensions, and 32-bit multiplies
+(Advanced SIMD has no 64-bit multiply). Stores whose expressions match, operation by
+operation and immediate by immediate, are copies if:
+
+- they store adjacent elements, and the loads in each position of their expressions load
+  adjacent elements: their immediate offsets step by the element's size;
+- they share no instructions, and none uses a value another computed, in the same
+  iteration or the one before;
+- each loads something.
+
+So it doesn't report a recurrence such as `y[i] = a * y[i - 1] + x[i]`, which C2 also
+unrolls (eight times on JDK 25) but whose copies each take the previous copy's result in a
+register; a floating-point sum, which stores nothing and which C2 can't vectorise without
+changing its rounding; or a `long` multiply. For the profile above:
+
+```java
+List<Instruction> code = new Aarch64Disassembler().decodeAll(profile.machineCode().orElseThrow(), profile.address());
+List<MissedVectorisation> findings = new MissedVectorisationRule().apply(
+        code, new Aarch64RegisterModel(), i -> profile.count((int) (i.address() - profile.address())));
+MissedVectorisation found = findings.get(0);
+found.header();       // +0xe0
+found.lanes();        // 4: the copies
+found.elementSize();  // 8
+found.copies();       // each copy's ldr, ldr, fmul, fadd, str, the stores at +0x104, +0x118, +0x12c, +0x154
+found.operations();   // fmul d16, d16, d0; fadd d16, d16, d17
+found.samples();      // 99, all of the method's
+```
+
+The fix is usually to give C2 code it can compare: index both arrays from zero (copy a
+slice, or pass the arrays without offsets where the offsets are always zero), or write
+the kernel with the Vector API.
 
 ## Using it
 
