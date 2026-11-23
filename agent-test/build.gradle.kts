@@ -66,6 +66,9 @@ tasks.withType<Test>().configureEach {
             // type's method kept out of line, so its loop has a call to look at.
             "-XX:CompileCommand=dontinline,instructive.agenttest.MegamorphicCallTest::sum*",
             "-XX:CompileCommand=dontinline,instructive.agenttest.MegamorphicCallTest\$Square::area",
+            // MissedVectorisationTest's kernels, each profiled as a method of its own.
+            "-XX:CompileCommand=dontinline,instructive.agenttest.MissedVectorisationTest::daxpy*",
+            "-XX:CompileCommand=dontinline,instructive.agenttest.MissedVectorisationTest::intersect",
             // DispatchAttributionTest profiles the loop as a method of its own.
             "-XX:CompileCommand=dontinline,instructive.agenttest.DispatchAttributionTest::sumAreas",
             // MethodNamesTest looks for these as compiled methods of their own.
@@ -89,10 +92,22 @@ val smallCounterStorageTest = tasks.register<Test>("smallCounterStorageTest") {
     systemProperty("instructive.counterCapacity", "1024")
 }
 
+// Tests tagged "no-superword" need a JVM of their own, in which C2 doesn't vectorise.
+val noSuperWordTest = tasks.register<Test>("noSuperWordTest") {
+    description = "Runs the tests that need C2's superword pass, its vectoriser, turned off."
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform {
+        includeTags("no-superword")
+    }
+    jvmArgs("-XX:-UseSuperWord")
+}
+
 tasks.test {
     useJUnitPlatform {
-        excludeTags("small-counter-storage")
+        excludeTags("small-counter-storage", "no-superword")
     }
     // So that running the tests (as CI does) runs these too.
-    dependsOn(smallCounterStorageTest)
+    dependsOn(smallCounterStorageTest, noSuperWordTest)
 }
